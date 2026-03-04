@@ -1,0 +1,37 @@
+# Aptamer Target Identification Pipeline Configuration
+
+target:
+  input_type: "pdb_id"       # Options: pdb_id, fasta, smiles
+  input_value: "1S91"        # Example: vancomycin-binding protein
+  name: "vancomycin_target"
+
+library:
+  size: 1000                 # Number of aptamer candidates to generate
+  length_min: 25             # Minimum aptamer length (nt)
+  length_max: 60             # Maximum aptamer length (nt)
+  gc_min: 0.40               # Minimum GC content
+  gc_max: 0.65               # Maximum GC content
+  max_homopolymer: 4         # Max consecutive identical nucleotides
+  seed: 42                   # Random seed for reproducibility
+
+structure:
+  temperature: 37.0          # Folding temperature in Celsius
+  mfe_threshold: -5.0        # Minimum free energy cutoff (kcal/mol)
+
+scoring:
+  model_type: "random_forest" # ML model: random_forest, gradient_boosting
+  n_estimators: 100
+  weights:
+    binding_affinity: 0.40
+    structural_stability: 0.30
+    sequence_diversity: 0.30
+
+filtering:
+  top_n: 50                  # Number of top candidates to return
+  min_complexity: 3          # Minimum number of structural motifs
+
+output:
+  format: "csv"              # Options: csv, json, both
+  directory: "output"
+  generate_plots: true
+  verbose: true
