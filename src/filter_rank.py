@@ -1,4 +1,4 @@
-"""Station 5: The Final Cut.
+"""Station 5: The Winning Bunch.
 
 This module creates the shortlist we hand to experimental follow-up.
 We use enrichment as the main signal, then add structure/diversity as tie-breakers.
@@ -145,7 +145,7 @@ def filter_and_rank(candidates: list, structures: list,
     if not all_mfe:
         logger.warning(
             "No structure predictions available for ranking. "
-            "Tip: run the structure stage before The Final Cut."
+            "Tip: run the structure stage before The Winning Bunch."
         )
         return []
 

@@ -3,7 +3,7 @@
 
 This project helps us move from raw HT-SELEX count tables to a ranked shortlist of aptamer candidates.
 The key idea is simple: we reward sequences that truly gain ground across rounds, not sequences that only look big in one file.
-Everything in this README is written so a new teammate can explain both the workflow and the failure points with confidence.
+Everything in this README is written so that anyone can interact with the tool and be aware of the processes behind generating the output.
 
 ## What This Pipeline Is (and Is Not)
 
@@ -18,12 +18,12 @@ Everything in this README is written so a new teammate can explain both the work
 - We support both wide format (`round_1`, `round_2`, ...) and long format (`round`, `count`).
 - We merge duplicate sequence rows and keep clean DNA-style sequence strings.
 
-### 2. The Race Begins (CPM Normalization)
+### 2. The Starting Line (CPM Normalization)
 - We compute each round's total reads.
 - We convert raw counts to CPM (`count / round_total * 1,000,000`) so rounds with different depths are comparable.
 - This is what lets us interpret "growth" as a biological trend instead of a sequencing-depth artifact.
 
-### 3. Race Leaders (Enrichment Scoring)
+### 3. The Race Begins (Enrichment Scoring)
 - For each sequence, we look at how CPM changes across rounds.
 - We use two signals together: first-to-last log2 enrichment and overall trend slope.
 - Sequences with strong and steady rise get higher enrichment scores.
@@ -33,7 +33,7 @@ Everything in this README is written so a new teammate can explain both the work
 - If target retrieval fails, we hard-stop the run.
 - We do this to protect us from silent junk outputs based on missing target context.
 
-### 5. The Final Cut (Filtering + Ranking)
+### 5. The Winning Bunch (Filtering + Ranking)
 - We remove weak candidates using enrichment and structure thresholds.
 - We compute a composite score where enrichment is the primary driver, and structure/diversity help break ties.
 - The output shortlist is saved to CSV/JSON for downstream review.
@@ -96,12 +96,12 @@ Edit `config/pipeline_config.yaml`:
 - It usually means column headers are inconsistent.
 - Tip: rename the sequence column to `sequence` and rerun.
 
-### The Race Begins
+### The Starting Line
 - If you see **"One or more rounds have zero total reads"**, normalization cannot proceed safely.
 - This means at least one round is effectively empty.
 - Tip: check that all round columns are mapped correctly and not accidentally blank.
 
-### Race Leaders
+### The Race Begins
 - If scores look flat (many near 0.5), your trajectories may be too similar or too sparse.
 - That is not a code crash, but it is a signal to inspect round quality and `min_total_count`.
 - Tip: inspect `log2_enrichment` and `trend_slope` in exported results.
@@ -111,7 +111,7 @@ Edit `config/pipeline_config.yaml`:
 - Tip: check network access, ID spelling, or switch to a local FASTA target file.
 - We prefer stopping early here because silent fallback would corrupt later decisions.
 
-### The Final Cut
+### The Winning Bunch
 - If you get **"No candidates passed filters"**, the filters are likely too strict for the current dataset.
 - Tip: loosen `min_log2_enrichment`, `mfe_threshold`, or `min_complexity` gradually and rerun.
 - Keep a record of threshold changes so we can justify shortlist criteria later.
@@ -121,10 +121,10 @@ Edit `config/pipeline_config.yaml`:
 ```text
 src/
 ├── pipeline.py            # Orchestrates the full run and stage-by-stage execution
-├── sequence_generator.py  # The Scanner + The Race Begins logic
-├── binding_scorer.py      # Race Leaders scoring
+├── sequence_generator.py  # The Scanner + The Starting Line logic
+├── binding_scorer.py      # The Race Begins scoring
 ├── target_analyzer.py     # Security Check target validation
-├── filter_rank.py         # The Final Cut filtering and ranking
+├── filter_rank.py         # The Winning Bunch filtering and ranking
 ├── structure_predictor.py # Secondary structure features
 └── utils.py               # Shared helpers
 ```

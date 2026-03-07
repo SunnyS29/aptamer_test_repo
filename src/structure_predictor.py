@@ -1,7 +1,7 @@
 """Support stage: secondary-structure features for shortlist tie-breaking.
 
 This module is not one of the five core stations, but it gives us extra context
-for The Final Cut when two candidates have similar enrichment behavior.
+for The Winning Bunch when two candidates have similar enrichment behavior.
 """
 
 import logging

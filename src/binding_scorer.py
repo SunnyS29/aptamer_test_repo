@@ -1,4 +1,4 @@
-"""Station 3: Race Leaders.
+"""Station 3: The Race Begins.
 
 This module turns per-round CPM trajectories into an enrichment score that favors
 sequences which rise strongly and steadily over the course of selection.
@@ -103,7 +103,7 @@ def score_binding(candidates: list, structures: list,
     if not candidates:
         logger.warning(
             "No candidates available for enrichment scoring. "
-            "Tip: check The Scanner/The Race Begins stages for upstream filtering."
+            "Tip: check The Scanner/The Starting Line stages for upstream filtering."
         )
         return []
 
