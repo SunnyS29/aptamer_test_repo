@@ -1,7 +1,10 @@
-"""Stage 5: Multi-criteria filtering and ranking of aptamer candidates."""
+"""Station 5: Final Cut.
+
+This module creates the shortlist we hand to experimental follow-up.
+We use enrichment as the main signal, then add structure/diversity as tie-breakers.
+"""
 
 import logging
-import pandas as pd
 from dataclasses import dataclass
 
 logger = logging.getLogger("aptamer_pipeline")
@@ -20,6 +23,9 @@ class RankedCandidate:
     motif_count: int
     has_g_quadruplex: bool
     binding_score: float
+    log2_enrichment: float
+    trend_slope: float
+    final_round_cpm: float
     stability_score: float
     diversity_score: float
     composite_score: float
@@ -36,6 +42,9 @@ class RankedCandidate:
             "motif_count": self.motif_count,
             "has_g_quadruplex": self.has_g_quadruplex,
             "binding_score": round(self.binding_score, 4),
+            "log2_enrichment": round(self.log2_enrichment, 4),
+            "trend_slope": round(self.trend_slope, 4),
+            "final_round_cpm": round(self.final_round_cpm, 4),
             "stability_score": round(self.stability_score, 4),
             "diversity_score": round(self.diversity_score, 4),
             "composite_score": round(self.composite_score, 4),
@@ -48,7 +57,7 @@ def compute_stability_score(mfe: float, mfe_values: list[float]) -> float:
     max_mfe = max(mfe_values)
     if max_mfe == min_mfe:
         return 0.5
-    # Invert: most negative MFE gets highest score
+    # We invert because lower (more negative) MFE means more stable folding.
     return (max_mfe - mfe) / (max_mfe - min_mfe)
 
 
@@ -60,7 +69,8 @@ def compute_diversity_score(sequence: str, all_sequences: list[str]) -> float:
     if len(all_sequences) <= 1:
         return 1.0
 
-    # Use k-mer (3-mer) composition distance as a fast diversity proxy
+    # 3-mer Jaccard distance is a fast, interpretable diversity proxy.
+    # We use it so highly similar sequences do not dominate the final shortlist.
     def kmer_set(seq, k=3):
         return set(seq[i:i+k] for i in range(len(seq) - k + 1))
 
@@ -109,26 +119,40 @@ def filter_and_rank(candidates: list, structures: list,
 
     top_n = filter_config.get("top_n", 50)
     min_complexity = filter_config.get("min_complexity", 3)
+    min_log2_enrichment = filter_config.get("min_log2_enrichment")
     mfe_threshold = structure_config.get("mfe_threshold", -5.0)
 
     weights = scoring_config.get("weights", {})
-    w_binding = weights.get("binding_affinity", 0.40)
-    w_stability = weights.get("structural_stability", 0.30)
-    w_diversity = weights.get("sequence_diversity", 0.30)
+    w_binding = weights.get("enrichment_growth", weights.get("binding_affinity", 0.70))
+    w_stability = weights.get("structural_stability", 0.20)
+    w_diversity = weights.get("sequence_diversity", 0.10)
+    weight_sum = w_binding + w_stability + w_diversity
+    if weight_sum <= 0:
+        raise ValueError("Scoring weights must sum to a positive value.")
+    w_binding /= weight_sum
+    w_stability /= weight_sum
+    w_diversity /= weight_sum
 
     # Build lookup maps
     struct_map = {s.aptamer_id: s for s in structures}
     score_map = {s.aptamer_id: s for s in binding_scores}
     cand_map = {c.id: c for c in candidates}
 
-    # Collect all MFE values and sequences for normalization
+    # We normalize against the full candidate pool so component scores stay on
+    # comparable scales before composite weighting.
     all_mfe = [s.mfe for s in structures]
     all_sequences = [c.sequence for c in candidates]
+    if not all_mfe:
+        logger.warning(
+            "No structure predictions available for ranking. "
+            "Tip: run the structure stage before Final Cut."
+        )
+        return []
 
     logger.info(f"Filtering candidates: mfe_threshold={mfe_threshold}, "
                 f"min_complexity={min_complexity}")
 
-    # Filter
+    # First pass: hard filters remove obvious non-winners before weighted ranking.
     filtered_ids = []
     for candidate in candidates:
         struct = struct_map.get(candidate.id)
@@ -139,11 +163,15 @@ def filter_and_rank(candidates: list, structures: list,
             continue
         if struct.motif_count < min_complexity:
             continue
+        if min_log2_enrichment is not None:
+            seq_log2 = score.features.get("log2_enrichment", 0.0)
+            if seq_log2 < float(min_log2_enrichment):
+                continue
         filtered_ids.append(candidate.id)
 
     logger.info(f"After filtering: {len(filtered_ids)}/{len(candidates)} candidates remain")
 
-    # Score and rank
+    # Second pass: composite ranking among survivors.
     ranked = []
     for apt_id in filtered_ids:
         candidate = cand_map[apt_id]
@@ -170,6 +198,9 @@ def filter_and_rank(candidates: list, structures: list,
             motif_count=struct.motif_count,
             has_g_quadruplex=struct.has_g_quadruplex,
             binding_score=binding.score,
+            log2_enrichment=float(binding.features.get("log2_enrichment", 0.0)),
+            trend_slope=float(binding.features.get("trend_slope", 0.0)),
+            final_round_cpm=float(binding.features.get("final_round_cpm", 0.0)),
             stability_score=stability,
             diversity_score=diversity,
             composite_score=composite,

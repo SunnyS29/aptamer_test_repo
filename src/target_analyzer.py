@@ -1,4 +1,9 @@
-"""Stage 1: Target molecule input and feature extraction."""
+"""Station 4: Security Check.
+
+This module validates target context before we score anything.
+We intentionally fail fast when target data is missing so we do not publish
+rankings built on incomplete biology.
+"""
 
 import logging
 import requests
@@ -6,7 +11,8 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger("aptamer_pipeline")
 
-# Amino acid hydrophobicity scale (Kyte-Doolittle)
+# Amino acid hydrophobicity scale (Kyte-Doolittle).
+# We use a simple summary here because it is interpretable for quick audits.
 HYDROPHOBICITY = {
     "I": 4.5, "V": 4.2, "L": 3.8, "F": 2.8, "C": 2.5,
     "M": 1.9, "A": 1.8, "G": -0.4, "T": -0.7, "S": -0.8,
@@ -14,7 +20,7 @@ HYDROPHOBICITY = {
     "E": -3.5, "N": -3.5, "Q": -3.5, "K": -3.9, "R": -4.5,
 }
 
-# Amino acid charge at pH 7.4
+# Amino acid charge at pH 7.4 (simplified side-chain model).
 CHARGE = {
     "D": -1, "E": -1, "K": 1, "R": 1, "H": 0.1,
 }
@@ -71,10 +77,15 @@ def fetch_pdb_sequence(pdb_id: str) -> str:
         if sequence:
             logger.info(f"Retrieved sequence: {len(sequence)} residues")
             return sequence
-        raise ValueError(f"No sequence found for PDB ID {pdb_id}")
+        raise RuntimeError(
+            f"No sequence found for PDB ID '{pdb_id}'. "
+            "Tip: verify the ID and chain/entity assumptions."
+        )
     except requests.RequestException as e:
-        logger.warning(f"PDB fetch failed: {e}. Using offline mode.")
-        return ""
+        raise RuntimeError(
+            f"Failed to fetch PDB target '{pdb_id}' from RCSB: {e}. "
+            "Tip: check network access or switch to a local FASTA target."
+        ) from e
 
 
 def fetch_uniprot_sequence(uniprot_id: str) -> str:
@@ -87,11 +98,18 @@ def fetch_uniprot_sequence(uniprot_id: str) -> str:
         resp.raise_for_status()
         lines = resp.text.strip().split("\n")
         sequence = "".join(line for line in lines if not line.startswith(">"))
+        if not sequence:
+            raise RuntimeError(
+                f"No sequence found for UniProt ID '{uniprot_id}'. "
+                "Tip: verify the accession ID and record status."
+            )
         logger.info(f"Retrieved sequence: {len(sequence)} residues")
         return sequence
     except requests.RequestException as e:
-        logger.warning(f"UniProt fetch failed: {e}. Using offline mode.")
-        return ""
+        raise RuntimeError(
+            f"Failed to fetch UniProt target '{uniprot_id}': {e}. "
+            "Tip: check network access or use FASTA input for offline runs."
+        ) from e
 
 
 def compute_features(sequence: str) -> dict:
@@ -102,7 +120,8 @@ def compute_features(sequence: str) -> dict:
     seq = sequence.upper()
     length = len(seq)
 
-    # Average molecular weight per residue ~110 Da
+    # We keep this estimate simple for explainability in early-stage ranking.
+    # If we need higher precision later, we can swap in residue-level masses.
     mw = length * 110.0
 
     # Hydrophobicity
@@ -155,6 +174,11 @@ def analyze_target(config: dict) -> TargetFeatures:
         if seqs:
             sequence = seqs[0][1]
             metadata["fasta_header"] = seqs[0][0]
+        else:
+            raise ValueError(
+                f"No sequences found in FASTA target file: {input_value}. "
+                "Tip: check FASTA headers and file path."
+            )
     elif input_type == "smiles":
         # For small molecules, store SMILES directly
         metadata["smiles"] = input_value
@@ -166,6 +190,17 @@ def analyze_target(config: dict) -> TargetFeatures:
     elif input_type == "uniprot":
         sequence = fetch_uniprot_sequence(input_value)
         metadata["uniprot_id"] = input_value
+    else:
+        raise ValueError(
+            f"Unsupported target input_type '{input_type}'. "
+            "Expected one of: pdb_id, fasta, smiles, uniprot."
+        )
+
+    if not sequence:
+        raise RuntimeError(
+            f"Target sequence for '{name}' is empty. "
+            "Security Check blocked this run to prevent silent failure."
+        )
 
     features = compute_features(sequence)
 

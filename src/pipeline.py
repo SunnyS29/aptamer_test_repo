@@ -1,7 +1,11 @@
-"""Aptamer Target Identification Pipeline — CLI Orchestrator.
+"""Aptamer Target Identification Pipeline — CLI orchestrator.
 
-A computational pipeline for accelerating DNA aptamer target identification,
-inspired by electrochemical aptamer-based (EAB) biosensor applications.
+Think of this file as the route map through our five stations:
+1) Scanner
+2) Race Begins
+3) Winning Bunch
+4) Security Check
+5) Final Cut
 
 Usage:
     python -m src.pipeline --config config/pipeline_config.yaml
@@ -9,16 +13,11 @@ Usage:
 """
 
 import argparse
+import csv
 import json
 import logging
 import sys
 from pathlib import Path
-
-import pandas as pd
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import seaborn as sns
 
 from src.utils import load_config, setup_logging, ensure_output_dir
 from src.sequence_generator import generate_library
@@ -36,6 +35,19 @@ def generate_plots(ranked_candidates: list, output_dir: Path) -> None:
     """Generate summary visualization plots."""
     if not ranked_candidates:
         logger.warning("No candidates to plot.")
+        return
+
+    try:
+        import pandas as pd
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+    except Exception as exc:
+        logger.warning(
+            f"Plot generation skipped because plotting dependencies failed: {exc}. "
+            "Tip: install matplotlib/seaborn or disable plotting in config."
+        )
         return
 
     df = pd.DataFrame([r.to_dict() for r in ranked_candidates])
@@ -83,11 +95,15 @@ def export_results(ranked_candidates: list, target_features,
         logger.warning("No candidates to export.")
         return
 
-    df = pd.DataFrame([r.to_dict() for r in ranked_candidates])
+    records = [r.to_dict() for r in ranked_candidates]
 
     if fmt in ("csv", "both"):
         csv_path = output_dir / "ranked_candidates.csv"
-        df.to_csv(csv_path, index=False)
+        fieldnames = list(records[0].keys())
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(records)
         logger.info(f"Results exported to {csv_path}")
 
     if fmt in ("json", "both"):
@@ -116,7 +132,7 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
     output_config = config.get("output", {})
     output_dir = ensure_output_dir(output_config.get("directory", "output"))
 
-    # Stage 1: Target Analysis
+    # Station 4: Security Check (target context must be valid before scoring).
     if stage in ("target", "all"):
         logger.info("=" * 60)
         logger.info("STAGE 1: Target Analysis")
@@ -128,22 +144,25 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
         if stage == "target":
             return results
 
-    # Stage 2: Library Generation
+    # Station 1 + 2: Scanner + Race Begins (real counts + CPM-ready candidates).
     if stage in ("library", "all"):
         logger.info("=" * 60)
-        logger.info("STAGE 2: Aptamer Library Generation")
+        logger.info("STAGE 2: SELEX Count Ingestion")
         logger.info("=" * 60)
         candidates = generate_library(config)
         results["candidates"] = candidates
-        logger.info(f"Library: {len(candidates)} candidates generated")
+        logger.info(f"SELEX candidates: {len(candidates)} sequences retained")
 
         if stage == "library":
             return results
 
-    # Stage 3: Structure Prediction
+    # Structure features are optional support signals used during Final Cut.
     if stage in ("structure", "all"):
         if "candidates" not in results:
-            logger.error("Library generation must run before structure prediction.")
+            logger.error(
+                "Library generation must run before structure prediction. "
+                "Tip: run stage 'library' first."
+            )
             return results
 
         logger.info("=" * 60)
@@ -155,10 +174,13 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
         if stage == "structure":
             return results
 
-    # Stage 4: Binding Scoring
+    # Station 3: Winning Bunch scoring from round trajectories.
     if stage in ("scoring", "all"):
         if "candidates" not in results or "structures" not in results:
-            logger.error("Previous stages must run before scoring.")
+            logger.error(
+                "Previous stages must run before scoring. "
+                "Tip: run 'library' and 'structure' before 'scoring'."
+            )
             return results
 
         target = results.get("target")
@@ -167,7 +189,7 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
             results["target"] = target
 
         logger.info("=" * 60)
-        logger.info("STAGE 4: Binding Affinity Scoring")
+        logger.info("STAGE 4: Enrichment Trajectory Scoring")
         logger.info("=" * 60)
         scores = score_binding(
             results["candidates"], results["structures"], target, config
@@ -177,11 +199,14 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
         if stage == "scoring":
             return results
 
-    # Stage 5: Filtering & Ranking
+    # Station 5: Final Cut filtering + shortlist ranking.
     if stage in ("filtering", "all"):
         required = ["candidates", "structures", "binding_scores"]
         if not all(k in results for k in required):
-            logger.error("Previous stages must run before filtering.")
+            logger.error(
+                "Previous stages must run before filtering. "
+                "Tip: run through scoring first."
+            )
             return results
 
         logger.info("=" * 60)
@@ -263,11 +288,11 @@ Examples:
 
     if "ranked" in results and results["ranked"]:
         print(f"\nTop 5 candidates:")
-        print(f"{'Rank':<6}{'ID':<14}{'Score':<10}{'MFE':<10}{'Length':<8}{'GC':<8}")
-        print("-" * 56)
+        print(f"{'Rank':<6}{'ID':<14}{'Score':<10}{'log2E':<10}{'MFE':<10}{'Length':<8}{'GC':<8}")
+        print("-" * 68)
         for r in results["ranked"][:5]:
             print(f"{r.rank:<6}{r.aptamer_id:<14}{r.composite_score:<10.4f}"
-                  f"{r.mfe:<10.1f}{r.length:<8}{r.gc_content:<8.3f}")
+                  f"{r.log2_enrichment:<10.3f}{r.mfe:<10.1f}{r.length:<8}{r.gc_content:<8.3f}")
 
 
 if __name__ == "__main__":

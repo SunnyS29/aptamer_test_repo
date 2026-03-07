@@ -1,81 +1,135 @@
-# Aptamer Target Identification Pipeline
+# Empirical HT-SELEX Winner Pipeline
 
-A computational pipeline for accelerating DNA aptamer target identification, inspired by electrochemical aptamer-based (EAB) biosensor applications such as wearable drug monitoring patches.
+This project helps us move from raw HT-SELEX count tables to a ranked shortlist of aptamer candidates.
+The key idea is simple: we reward sequences that truly gain ground across rounds, not sequences that only look big in one file.
+Everything in this README is written so a new teammate can explain both the workflow and the failure points with confidence.
 
-## Overview
+## What This Pipeline Is (and Is Not)
 
-This pipeline generates, evaluates, and ranks ssDNA aptamer candidates for a given molecular target using:
+- **It is** an empirical analysis pipeline that reads real sequence counts from SELEX rounds.
+- **It is not** a random-sequence generator.
+- **It is designed** to make our decisions traceable: we can explain why each sequence was kept, filtered, or ranked.
 
-1. **Target Analysis** — Parse protein/small molecule targets, extract biochemical features
-2. **Library Generation** — SELEX-inspired random ssDNA aptamer library with quality filters
-3. **Structure Prediction** — Secondary structure prediction via ViennaRNA (with fallback estimator)
-4. **Binding Scoring** — ML-based binding affinity prediction (Random Forest / Gradient Boosting)
-5. **Filtering & Ranking** — Multi-criteria composite scoring and candidate selection
-6. **Results Export** — CSV/JSON output with summary visualizations
+## The 5 Stations
 
-## Installation
+### 1. Scanner (Data Ingestion)
+- We read a counts table and detect sequence + round columns.
+- We support both wide format (`round_1`, `round_2`, ...) and long format (`round`, `count`).
+- We merge duplicate sequence rows and keep clean DNA-style sequence strings.
 
+### 2. Race Begins (CPM Normalization)
+- We compute each round's total reads.
+- We convert raw counts to CPM (`count / round_total * 1,000,000`) so rounds with different depths are comparable.
+- This is what lets us interpret "growth" as a biological trend instead of a sequencing-depth artifact.
+
+### 3. Winning Bunch (Enrichment Scoring)
+- For each sequence, we look at how CPM changes across rounds.
+- We use two signals together: first-to-last log2 enrichment and overall trend slope.
+- Sequences with strong and steady rise get higher enrichment scores.
+
+### 4. Security Check (Target Verification)
+- We fetch target information from PDB/UniProt (or read FASTA).
+- If target retrieval fails, we hard-stop the run.
+- We do this to protect us from silent junk outputs based on missing target context.
+
+### 5. Final Cut (Filtering + Ranking)
+- We remove weak candidates using enrichment and structure thresholds.
+- We compute a composite score where enrichment is the primary driver, and structure/diversity help break ties.
+- The output shortlist is saved to CSV/JSON for downstream review.
+
+## Quick Start
+
+### Install
 ```bash
 git clone https://github.com/SunnyS29/aptamer_test_repo.git
 cd aptamer_test_repo
 pip install -r requirements.txt
 ```
 
-Optional (for accurate structure prediction):
+Optional for stronger structure modeling:
 ```bash
 pip install ViennaRNA
 ```
 
-## Usage
-
-Run the full pipeline:
+### Run
 ```bash
 python -m src.pipeline --config config/pipeline_config.yaml
 ```
 
-Run a specific stage:
+Run one station for debugging:
 ```bash
 python -m src.pipeline --config config/pipeline_config.yaml --stage library
 ```
 
-Override top N candidates:
-```bash
-python -m src.pipeline --config config/pipeline_config.yaml --top-n 100
+## Input Format We Expect
+
+### Wide format
+```csv
+sequence,round_1,round_2,round_3
+ACGT...,10,25,80
+TGCA...,8,12,9
 ```
 
-## Configuration
+### Long format
+```csv
+sequence,round,count
+ACGT...,round_1,10
+ACGT...,round_2,25
+```
 
-Edit `config/pipeline_config.yaml` to customize:
+## Configuration Cheat Sheet
 
-- **target**: Input type (PDB ID, FASTA, SMILES, UniProt), target name
-- **library**: Size, length range, GC content bounds, homopolymer limits
-- **structure**: Folding temperature, MFE threshold
-- **scoring**: ML model type, number of estimators, scoring weights
-- **filtering**: Top N candidates, minimum structural complexity
-- **output**: Format (CSV/JSON), plot generation
+Edit `config/pipeline_config.yaml`:
+
+- `target`: where target info comes from (`pdb_id`, `fasta`, `smiles`, `uniprot`)
+- `selex.counts_file`: the counts table path
+- `library`: sequence QC filters (length, GC, homopolymer, min total count)
+- `scoring`: pseudocount + growth weights
+- `filtering`: shortlist strictness (`top_n`, `min_log2_enrichment`, structure limits)
+- `output`: file format + output directory
+
+## Friendly Troubleshooting (By Station)
+
+### Scanner
+- If the pipeline says **"Could not find a sequence column"**, don't panic.
+- It usually means column headers are inconsistent.
+- Tip: rename the sequence column to `sequence` and rerun.
+
+### Race Begins
+- If you see **"One or more rounds have zero total reads"**, normalization cannot proceed safely.
+- This means at least one round is effectively empty.
+- Tip: check that all round columns are mapped correctly and not accidentally blank.
+
+### Winning Bunch
+- If scores look flat (many near 0.5), your trajectories may be too similar or too sparse.
+- That is not a code crash, but it is a signal to inspect round quality and `min_total_count`.
+- Tip: inspect `log2_enrichment` and `trend_slope` in exported results.
+
+### Security Check
+- If you see **"Failed to fetch PDB target"** or **"No sequence found"**, the run is correctly blocking unsafe analysis.
+- Tip: check network access, ID spelling, or switch to a local FASTA target file.
+- We prefer stopping early here because silent fallback would corrupt later decisions.
+
+### Final Cut
+- If you get **"No candidates passed filters"**, the filters are likely too strict for the current dataset.
+- Tip: loosen `min_log2_enrichment`, `mfe_threshold`, or `min_complexity` gradually and rerun.
+- Keep a record of threshold changes so we can justify shortlist criteria later.
 
 ## Project Structure
 
-```
+```text
 src/
-├── pipeline.py            # CLI orchestrator
-├── sequence_generator.py  # Aptamer library generation
-├── target_analyzer.py     # Target molecule analysis
-├── structure_predictor.py # Secondary structure prediction
-├── binding_scorer.py      # ML binding affinity scoring
-├── filter_rank.py         # Filtering and ranking
-└── utils.py               # Shared utilities
+├── pipeline.py            # Orchestrates the full run and stage-by-stage execution
+├── sequence_generator.py  # Scanner + Race Begins logic
+├── binding_scorer.py      # Winning Bunch scoring
+├── target_analyzer.py     # Security Check target validation
+├── filter_rank.py         # Final Cut filtering and ranking
+├── structure_predictor.py # Secondary structure features
+└── utils.py               # Shared helpers
 ```
 
-## Running Tests
+## Testing
 
 ```bash
-pip install pytest
 python -m pytest tests/ -v
 ```
-
-## Notes
-
-- The ML scoring model uses synthetic training data as a baseline. Replace with experimental SELEX data for production use.
-- ViennaRNA provides accurate thermodynamic structure prediction. Without it, a simplified estimator is used.
-- G-quadruplex detection is included as these motifs are common in functional aptamers.
