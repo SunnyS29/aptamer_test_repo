@@ -62,7 +62,7 @@ Run one station for debugging:
 python -m src.pipeline --config config/pipeline_config.yaml --stage library
 ```
 
-## Input Format We Expect
+## Supported Input Formats
 
 ### Wide format
 ```csv
@@ -89,7 +89,7 @@ Edit `config/pipeline_config.yaml`:
 - `filtering`: shortlist strictness (`top_n`, `min_log2_enrichment`, structure limits)
 - `output`: file format + output directory
 
-## Friendly Troubleshooting (By Station)
+## Friendly Troubleshooting (By Section)
 
 ### The Scanner
 - If the pipeline says **"Could not find a sequence column"**, don't panic.
