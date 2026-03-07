@@ -1,11 +1,11 @@
 """Aptamer Target Identification Pipeline — CLI orchestrator.
 
 Think of this file as the route map through our five stations:
-1) Scanner
-2) Race Begins
-3) Winning Bunch
+1) The Scanner
+2) The Race Begins
+3) Race Leaders
 4) Security Check
-5) Final Cut
+5) The Final Cut
 
 Usage:
     python -m src.pipeline --config config/pipeline_config.yaml
@@ -144,7 +144,7 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
         if stage == "target":
             return results
 
-    # Station 1 + 2: Scanner + Race Begins (real counts + CPM-ready candidates).
+    # Station 1 + 2: The Scanner + The Race Begins (real counts + CPM-ready candidates).
     if stage in ("library", "all"):
         logger.info("=" * 60)
         logger.info("STAGE 2: SELEX Count Ingestion")
@@ -156,7 +156,7 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
         if stage == "library":
             return results
 
-    # Structure features are optional support signals used during Final Cut.
+    # Structure features are optional support signals used during The Final Cut.
     if stage in ("structure", "all"):
         if "candidates" not in results:
             logger.error(
@@ -174,7 +174,7 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
         if stage == "structure":
             return results
 
-    # Station 3: Winning Bunch scoring from round trajectories.
+    # Station 3: Race Leaders scoring from round trajectories.
     if stage in ("scoring", "all"):
         if "candidates" not in results or "structures" not in results:
             logger.error(
@@ -199,7 +199,7 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
         if stage == "scoring":
             return results
 
-    # Station 5: Final Cut filtering + shortlist ranking.
+    # Station 5: The Final Cut filtering + shortlist ranking.
     if stage in ("filtering", "all"):
         required = ["candidates", "structures", "binding_scores"]
         if not all(k in results for k in required):

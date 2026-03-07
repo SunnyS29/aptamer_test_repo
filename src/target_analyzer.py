@@ -53,7 +53,7 @@ class TargetFeatures:
         }
 
     def to_feature_vector(self) -> list[float]:
-        """Return numeric features for ML scoring."""
+        """Return numeric target features for downstream composite scoring."""
         return [
             self.molecular_weight,
             self.avg_hydrophobicity,
@@ -180,7 +180,7 @@ def analyze_target(config: dict) -> TargetFeatures:
                 "Tip: check FASTA headers and file path."
             )
     elif input_type == "smiles":
-        # For small molecules, store SMILES directly
+        # For small molecules, we keep the SMILES string and skip protein-only features.
         metadata["smiles"] = input_value
         logger.info("Small molecule target (SMILES) — limited feature extraction")
         return TargetFeatures(

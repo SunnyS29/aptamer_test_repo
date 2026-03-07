@@ -10,10 +10,10 @@
 ### What changed
 - Rewrote `README.md` around:
   - `Scanner`
-  - `Race Begins`
-  - `Winning Bunch`
+  - `The Race Begins`
+  - `Race Leaders`
   - `Security Check`
-  - `Final Cut`
+  - `The Final Cut`
 - Added empathetic troubleshooting tips with plain-language fixes.
 - Updated inline comments/docstrings in core modules to explain **why** each step exists:
   - `src/sequence_generator.py`

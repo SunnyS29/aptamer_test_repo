@@ -1,4 +1,8 @@
-"""Stage 3: Secondary structure prediction for DNA aptamers."""
+"""Support stage: secondary-structure features for shortlist tie-breaking.
+
+This module is not one of the five core stations, but it gives us extra context
+for The Final Cut when two candidates have similar enrichment behavior.
+"""
 
 import logging
 import re
@@ -6,14 +10,15 @@ from dataclasses import dataclass
 
 logger = logging.getLogger("aptamer_pipeline")
 
-# Try to import ViennaRNA; fall back to a simple estimator if unavailable
+# We prefer ViennaRNA for stronger thermodynamic estimates.
+# If it is not installed, we fall back to a simple estimator so development can continue.
 try:
     import RNA
     VIENNA_AVAILABLE = True
 except ImportError:
     VIENNA_AVAILABLE = False
     logger.warning("ViennaRNA not installed. Using simplified MFE estimation. "
-                   "Install with: pip install ViennaRNA")
+                   "Tip: install with 'pip install ViennaRNA' for better structures.")
 
 
 @dataclass
@@ -57,18 +62,18 @@ def count_structural_motifs(structure: str) -> dict:
     i = 0
     while i < len(structure):
         if structure[i] == "(":
-            # Count consecutive paired bases as one stem
+            # Consecutive paired bases are treated as one stem block.
             j = i
             while j < len(structure) and structure[j] == "(":
                 j += 1
             n_stems += 1
             i = j
         elif structure[i] == ".":
-            # Unpaired region — classify as loop or bulge
+            # Unpaired region; we classify it as loop or bulge using local context.
             j = i
             while j < len(structure) and structure[j] == ".":
                 j += 1
-            # If flanked by paired bases on both sides, it's a loop/bulge
+            # If a dot-run sits between paired regions, we treat it as loop/bulge.
             if i > 0 and j < len(structure):
                 if structure[i - 1] in "()" and structure[j] in "()":
                     if j - i <= 3:
@@ -90,14 +95,13 @@ def estimate_mfe_simple(sequence: str) -> tuple[str, float]:
     Uses nearest-neighbor approximations for DNA.
     """
     length = len(sequence)
-    # Rough estimate: -0.5 to -1.5 kcal/mol per potential base pair
+    # This is a rough estimate, used only when ViennaRNA is unavailable.
     gc = sum(1 for nt in sequence.upper() if nt in "GC")
     at = length - gc
-    mfe = -(gc * 1.2 + at * 0.5) * 0.3  # simplified energy estimate
+    mfe = -(gc * 1.2 + at * 0.5) * 0.3  # simplified fallback energy
 
-    # Generate a plausible dot-bracket structure
+    # Build a simple dot-bracket scaffold so downstream code has a valid structure string.
     structure = list("." * length)
-    stack = []
     for i in range(length // 4):
         j = length - 1 - i
         if i < j:

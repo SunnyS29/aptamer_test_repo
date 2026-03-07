@@ -1,4 +1,8 @@
-"""Shared utility functions for the aptamer pipeline."""
+"""Shared helper functions used across stations.
+
+We keep these helpers small and explicit so troubleshooting is easier when
+something goes wrong in the main pipeline flow.
+"""
 
 import logging
 import os
@@ -7,7 +11,7 @@ from pathlib import Path
 
 
 def setup_logging(verbose: bool = True) -> logging.Logger:
-    """Configure pipeline logging."""
+    """Configure pipeline logging once, then reuse it everywhere."""
     logger = logging.getLogger("aptamer_pipeline")
     logger.setLevel(logging.DEBUG if verbose else logging.INFO)
 
@@ -23,7 +27,7 @@ def setup_logging(verbose: bool = True) -> logging.Logger:
 
 
 def load_config(config_path: str) -> dict:
-    """Load pipeline configuration from YAML file."""
+    """Load YAML config and fail early if the path is wrong."""
     path = Path(config_path)
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -33,21 +37,21 @@ def load_config(config_path: str) -> dict:
 
 
 def ensure_output_dir(output_dir: str) -> Path:
-    """Create output directory if it doesn't exist."""
+    """Create output folder if needed so exports do not fail later."""
     path = Path(output_dir)
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def gc_content(sequence: str) -> float:
-    """Calculate GC content of a nucleotide sequence."""
+    """Calculate GC fraction for quick sequence-quality checks."""
     seq = sequence.upper()
     gc = sum(1 for nt in seq if nt in "GC")
     return gc / len(seq) if seq else 0.0
 
 
 def has_homopolymer(sequence: str, max_run: int = 4) -> bool:
-    """Check if sequence contains a homopolymer run exceeding max_run."""
+    """Check for long same-base runs that often behave poorly in practice."""
     count = 1
     for i in range(1, len(sequence)):
         if sequence[i] == sequence[i - 1]:
@@ -60,7 +64,7 @@ def has_homopolymer(sequence: str, max_run: int = 4) -> bool:
 
 
 def read_fasta(filepath: str) -> list[tuple[str, str]]:
-    """Read sequences from a FASTA file. Returns list of (header, sequence) tuples."""
+    """Read FASTA into `(header, sequence)` pairs with uppercase sequences."""
     sequences = []
     header = None
     seq_parts = []
@@ -83,7 +87,7 @@ def read_fasta(filepath: str) -> list[tuple[str, str]]:
 
 
 def write_fasta(sequences: list[tuple[str, str]], filepath: str) -> None:
-    """Write sequences to a FASTA file."""
+    """Write `(header, sequence)` pairs to FASTA with wrapped lines."""
     with open(filepath, "w") as f:
         for header, seq in sequences:
             f.write(f">{header}\n")

@@ -1,8 +1,8 @@
-"""Station 1 + Station 2: Scanner and Race Begins.
+"""Station 1 + Station 2: The Scanner and The Race Begins.
 
 This module does two jobs for us:
-1) Scanner: read real HT-SELEX count files and build a clean per-sequence table.
-2) Race Begins: normalize each round to CPM so comparisons are depth-aware.
+1) The Scanner: read real HT-SELEX count files and build a clean per-sequence table.
+2) The Race Begins: normalize each round to CPM so comparisons are depth-aware.
 """
 
 import csv
@@ -359,7 +359,7 @@ def generate_library(config: dict) -> list[AptamerCandidate]:
     min_total_count = lib_config.get("min_total_count", 1)
 
     table, rounds = _load_selex_counts(config)
-    # We keep round totals around to convert raw counts to CPM (Race Begins station).
+    # We keep round totals around to convert raw counts to CPM (The Race Begins station).
     round_totals = {r: float(sum(record[r] for record in table)) for r in rounds}
 
     logger.info(
