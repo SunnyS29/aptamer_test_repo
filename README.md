@@ -1,4 +1,5 @@
-# Empirical HT-SELEX Winner Pipeline
+# Aptamer Playground Race:
+## An Empirical HT-SELEX Enrichment & Analysis Pipeline
 
 This project helps us move from raw HT-SELEX count tables to a ranked shortlist of aptamer candidates.
 The key idea is simple: we reward sequences that truly gain ground across rounds, not sequences that only look big in one file.
