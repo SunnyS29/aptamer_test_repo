@@ -291,3 +291,7 @@ Recommendation output:
 - `A`: Sequence more rounds
 - `B`: Stop and validate
 - `C`: Potential over-selection, review earlier rounds
+
+## License
+
+This project is released under the MIT License. See [LICENSE](/Users/sunny/Documents/aptamer-pipeline/LICENSE).
