@@ -11,14 +11,17 @@ from dataclasses import dataclass
 logger = logging.getLogger("aptamer_pipeline")
 
 # We prefer ViennaRNA for stronger thermodynamic estimates.
-# If it is not installed, we fall back to a simple estimator so development can continue.
+# If it is not installed, we keep structure fields explicitly neutral so the
+# rest of the pipeline does not mistake placeholders for real thermodynamics.
 try:
     import RNA
     VIENNA_AVAILABLE = True
 except ImportError:
     VIENNA_AVAILABLE = False
-    logger.warning("ViennaRNA not installed. Using simplified MFE estimation. "
-                   "Tip: install with 'pip install ViennaRNA' for better structures.")
+    logger.warning(
+        "ViennaRNA not installed. Structure outputs will stay neutral. "
+        "Tip: install with 'pip install ViennaRNA' for thermodynamic scoring."
+    )
 
 
 @dataclass
@@ -89,28 +92,6 @@ def count_structural_motifs(structure: str) -> dict:
     return {"n_stems": n_stems, "n_loops": n_loops, "n_bulges": n_bulges}
 
 
-def estimate_mfe_simple(sequence: str) -> tuple[str, float]:
-    """Simplified MFE estimation when ViennaRNA is not available.
-
-    Uses nearest-neighbor approximations for DNA.
-    """
-    length = len(sequence)
-    # This is a rough estimate, used only when ViennaRNA is unavailable.
-    gc = sum(1 for nt in sequence.upper() if nt in "GC")
-    at = length - gc
-    mfe = -(gc * 1.2 + at * 0.5) * 0.3  # simplified fallback energy
-
-    # Build a simple dot-bracket scaffold so downstream code has a valid structure string.
-    structure = list("." * length)
-    for i in range(length // 4):
-        j = length - 1 - i
-        if i < j:
-            structure[i] = "("
-            structure[j] = ")"
-
-    return "".join(structure), mfe
-
-
 def predict_structure(aptamer_id: str, sequence: str,
                       temperature: float = 37.0) -> StructureResult:
     """Predict secondary structure for a single aptamer sequence."""
@@ -119,14 +100,17 @@ def predict_structure(aptamer_id: str, sequence: str,
         md.temperature = temperature
         fc = RNA.fold_compound(sequence, md)
         structure, mfe = fc.mfe()
-    else:
-        structure, mfe = estimate_mfe_simple(sequence)
-
-    motifs = count_structural_motifs(structure)
     has_gq = detect_g_quadruplex(sequence)
-    motif_count = motifs["n_stems"] + motifs["n_loops"] + motifs["n_bulges"]
-    if has_gq:
-        motif_count += 1
+    if VIENNA_AVAILABLE:
+        motifs = count_structural_motifs(structure)
+        motif_count = motifs["n_stems"] + motifs["n_loops"] + motifs["n_bulges"]
+        if has_gq:
+            motif_count += 1
+    else:
+        structure = "NA"
+        mfe = 0.0
+        motifs = {"n_stems": 0, "n_loops": 0, "n_bulges": 0}
+        motif_count = 0
 
     return StructureResult(
         aptamer_id=aptamer_id,

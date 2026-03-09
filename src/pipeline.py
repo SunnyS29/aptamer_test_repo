@@ -132,13 +132,13 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
     output_config = config.get("output", {})
     output_dir = ensure_output_dir(output_config.get("directory", "output"))
 
-    needs_target = stage in ("target", "scoring", "filtering", "all")
+    needs_target = stage in ("target", "all")
     needs_library = stage in ("library", "structure", "scoring", "filtering", "all")
-    needs_structure = stage in ("structure", "scoring", "filtering", "all")
+    needs_structure = stage in ("structure", "filtering", "all")
     needs_scoring = stage in ("scoring", "filtering", "all")
     needs_filtering = stage in ("filtering", "all")
 
-    # Station 4: Security Check (target context must be valid before scoring).
+    # Station 4: Security Check validates the target for full pipeline runs.
     if needs_target:
         logger.info("=" * 60)
         logger.info("STAGE 1: Target Analysis")
@@ -182,23 +182,18 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
 
     # Station 3: The Race Begins scoring from round trajectories.
     if needs_scoring:
-        if "candidates" not in results or "structures" not in results:
+        if "candidates" not in results:
             logger.error(
-                "Previous stages must run before scoring. "
-                "Tip: run 'library' and 'structure' before 'scoring'."
+                "Library generation must run before scoring. "
+                "Tip: run stage 'library' first."
             )
             return results
-
-        target = results.get("target")
-        if target is None:
-            target = analyze_target(config)
-            results["target"] = target
 
         logger.info("=" * 60)
         logger.info("STAGE 4: Enrichment Trajectory Scoring")
         logger.info("=" * 60)
         scores = score_binding(
-            results["candidates"], results["structures"], target, config
+            results["candidates"], config=config
         )
         results["binding_scores"] = scores
 

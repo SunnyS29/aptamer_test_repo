@@ -7,6 +7,7 @@ sequences which rise strongly and steadily over the course of selection.
 import logging
 import math
 from dataclasses import dataclass
+from typing import Optional
 
 logger = logging.getLogger("aptamer_pipeline")
 
@@ -213,15 +214,26 @@ def _candidate_growth_metrics(candidate, pseudocount: float) -> dict:
     }
 
 
-def score_binding(candidates: list, structures: list,
-                  target_features, config: dict) -> list[BindingScore]:
-    """Score candidates using measured SELEX enrichment, not synthetic ML."""
+def score_binding(
+    candidates: list,
+    structures: Optional[list] = None,
+    target_features=None,
+    config: Optional[dict] = None,
+) -> list[BindingScore]:
+    """Score candidates using measured SELEX enrichment, not synthetic ML.
+
+    `structures` and `target_features` are accepted for backwards compatibility,
+    but enrichment scoring now depends only on the observed round trajectories.
+    """
     if not candidates:
         logger.warning(
             "No candidates available for enrichment scoring. "
             "Tip: check The Scanner/The Starting Line stages for upstream filtering."
         )
         return []
+
+    if config is None:
+        raise ValueError("Pipeline config is required for enrichment scoring.")
 
     scoring_config = config.get("scoring", {})
     pseudocount = float(scoring_config.get("pseudocount", 1.0))

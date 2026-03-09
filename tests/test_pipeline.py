@@ -16,7 +16,7 @@ from src.filter_rank import (
 from src.pipeline import run_pipeline
 from src.sequence_generator import AptamerCandidate, generate_library, validate_sequence
 from src.stopping_diagnostic import evaluate_stopping_point
-from src.structure_predictor import StructureResult
+from src.structure_predictor import StructureResult, predict_structure
 from src.target_analyzer import (
     TargetFeatures,
     analyze_target,
@@ -364,6 +364,19 @@ class TestFilterRank:
         assert ranked[0].stability_score == 0.5
 
 
+class TestStructurePredictor:
+    def test_predict_structure_returns_neutral_placeholders_without_vienna(self, monkeypatch):
+        monkeypatch.setattr("src.structure_predictor.VIENNA_AVAILABLE", False)
+        result = predict_structure("APT_1", "GGGAAAGGGAAAGGGAAAGGG")
+        assert result.structure == "NA"
+        assert result.mfe == 0.0
+        assert result.n_stems == 0
+        assert result.n_loops == 0
+        assert result.n_bulges == 0
+        assert result.motif_count == 0
+        assert result.has_g_quadruplex is True
+
+
 class TestPipelineStages:
     def test_run_pipeline_scoring_stage_runs_prerequisites(self, tmp_path):
         counts_path = tmp_path / "counts.csv"
@@ -372,11 +385,7 @@ class TestPipelineStages:
             "ACGTACGTACGT,10,25,80\n"
             "TGCATGCATGCA,8,12,9\n"
         )
-        target_path = tmp_path / "target.fasta"
-        target_path.write_text(">target\nMKWVTFISLLLLFSSAYS\n")
-
         config = {
-            "target": {"input_type": "fasta", "input_value": str(target_path), "name": "target"},
             "library": {
                 "length_min": 10,
                 "length_max": 60,
