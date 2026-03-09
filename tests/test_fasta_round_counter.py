@@ -105,3 +105,39 @@ def test_convert_round_files_from_fastq_and_fasta(tmp_path):
     assert by_seq["GGGG"]["round_2"] == "0"
     assert by_seq["TTTT"]["round_1"] == "0"
     assert by_seq["TTTT"]["round_2"] == "1"
+
+
+def test_convert_round_files_extracts_insert_between_anchors(tmp_path):
+    round1 = tmp_path / "round_1.fastq"
+    round2 = tmp_path / "round_2.fastq"
+    round1.write_text(
+        "@r1\nLEFTAACCRIGHT\n+\n##############\n"
+        "@r2\nLEFTAACCRIGHT\n+\n##############\n"
+        "@r3\nLEFTGGTTRIGHT\n+\n##############\n"
+        "@r4\nNOANCHOR\n+\n########\n"
+    )
+    round2.write_text(
+        "@r1\nLEFTAACCRIGHT\n+\n##############\n"
+        "@r2\nLEFTTTAARIGHT\n+\n##############\n"
+    )
+
+    out_csv = tmp_path / "anchored_counts.csv"
+    summaries = convert_round_files(
+        [round1, round2],
+        output_csv=out_csv,
+        round_labels=["round_1", "round_2"],
+        summary_tsv=None,
+        left_anchor="LEFT",
+        right_anchor="RIGHT",
+        allow_reverse_complement=False,
+    )
+
+    assert summaries[0].skipped_unmatched == 1
+
+    with out_csv.open() as handle:
+        rows = list(csv.DictReader(handle))
+    by_seq = {row["sequence"]: row for row in rows}
+    assert by_seq["AACC"]["round_1"] == "2"
+    assert by_seq["AACC"]["round_2"] == "1"
+    assert by_seq["GGTT"]["round_1"] == "1"
+    assert by_seq["TTAA"]["round_2"] == "1"

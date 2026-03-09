@@ -8,11 +8,14 @@ import requests
 
 from src.binding_scorer import BindingScore, score_binding
 from src.filter_rank import (
+    compute_diversity_scores,
     compute_diversity_score,
     compute_stability_score,
     filter_and_rank,
 )
+from src.pipeline import run_pipeline
 from src.sequence_generator import AptamerCandidate, generate_library, validate_sequence
+from src.stopping_diagnostic import evaluate_stopping_point
 from src.structure_predictor import StructureResult
 from src.target_analyzer import (
     TargetFeatures,
@@ -163,6 +166,91 @@ class TestEnrichmentScoring:
         assert score_map["APT_1"].features["log2_enrichment"] > 0
         assert score_map["APT_2"].features["log2_enrichment"] < 0
 
+    def test_growth_scoring_prefers_steady_pace_when_weighted(self):
+        candidates = [
+            AptamerCandidate(
+                id="APT_STEADY",
+                sequence="ACGTACGTACGT",
+                length=12,
+                gc=0.5,
+                round_counts={"round_1": 10, "round_2": 20, "round_3": 40, "round_4": 80},
+                round_cpm={"round_1": 100.0, "round_2": 200.0, "round_3": 400.0, "round_4": 800.0},
+                round_order=["round_1", "round_2", "round_3", "round_4"],
+            ),
+            AptamerCandidate(
+                id="APT_SPIKY",
+                sequence="TGCATGCATGCA",
+                length=12,
+                gc=0.5,
+                round_counts={"round_1": 10, "round_2": 10, "round_3": 10, "round_4": 80},
+                round_cpm={"round_1": 100.0, "round_2": 100.0, "round_3": 100.0, "round_4": 800.0},
+                round_order=["round_1", "round_2", "round_3", "round_4"],
+            ),
+        ]
+        config = {
+            "scoring": {
+                "pseudocount": 1.0,
+                "growth_weights": {
+                    "fold_change": 0.0,
+                    "trend": 0.0,
+                    "pace_consistency": 1.0,
+                },
+            }
+        }
+
+        scores = score_binding(candidates, structures=[], target_features=None, config=config)
+        score_map = {s.aptamer_id: s for s in scores}
+        assert score_map["APT_STEADY"].features["pace_consistency"] > score_map["APT_SPIKY"].features["pace_consistency"]
+        assert score_map["APT_STEADY"].score > score_map["APT_SPIKY"].score
+
+    def test_vectorized_flag_falls_back_when_numpy_unavailable(self, monkeypatch):
+        candidates = [
+            AptamerCandidate(
+                id="APT_A",
+                sequence="ACGTACGTACGT",
+                length=12,
+                gc=0.5,
+                round_counts={"round_1": 10, "round_2": 18, "round_3": 35, "round_4": 60},
+                round_cpm={"round_1": 100.0, "round_2": 180.0, "round_3": 350.0, "round_4": 600.0},
+                round_order=["round_1", "round_2", "round_3", "round_4"],
+            ),
+            AptamerCandidate(
+                id="APT_B",
+                sequence="TGCATGCATGCA",
+                length=12,
+                gc=0.5,
+                round_counts={"round_1": 10, "round_2": 8, "round_3": 12, "round_4": 20},
+                round_cpm={"round_1": 100.0, "round_2": 80.0, "round_3": 120.0, "round_4": 200.0},
+                round_order=["round_1", "round_2", "round_3", "round_4"],
+            ),
+        ]
+        cfg_common = {
+            "scoring": {
+                "pseudocount": 1.0,
+                "growth_weights": {"fold_change": 0.6, "trend": 0.2, "pace_consistency": 0.2},
+            }
+        }
+        monkeypatch.setattr("src.binding_scorer._load_numpy", lambda: None)
+        cfg_vec = {"scoring": dict(cfg_common["scoring"], vectorized_metrics=True)}
+        cfg_loop = {"scoring": dict(cfg_common["scoring"], vectorized_metrics=False)}
+
+        vec_scores = score_binding(candidates, structures=[], target_features=None, config=cfg_vec)
+        loop_scores = score_binding(candidates, structures=[], target_features=None, config=cfg_loop)
+        vec_map = {s.aptamer_id: s for s in vec_scores}
+        loop_map = {s.aptamer_id: s for s in loop_scores}
+
+        for apt_id in vec_map:
+            assert vec_map[apt_id].score == pytest.approx(loop_map[apt_id].score, abs=1e-9)
+            assert vec_map[apt_id].features["log2_enrichment"] == pytest.approx(
+                loop_map[apt_id].features["log2_enrichment"], abs=1e-9
+            )
+            assert vec_map[apt_id].features["trend_slope"] == pytest.approx(
+                loop_map[apt_id].features["trend_slope"], abs=1e-9
+            )
+            assert vec_map[apt_id].features["pace_consistency"] == pytest.approx(
+                loop_map[apt_id].features["pace_consistency"], abs=1e-9
+            )
+
 
 class TestFilterRank:
     def test_stability_score_normalization(self):
@@ -174,6 +262,11 @@ class TestFilterRank:
         seqs = ["AAAAAAAAAA", "CCCCCCCCCC", "GGGGGGGGGG"]
         score = compute_diversity_score("AAAAAAAAAA", seqs)
         assert score > 0.5
+
+    def test_diversity_scores_penalize_common_kmers(self):
+        seqs = ["AAAAAAAAAA", "AAAAAAAAAA", "CCCCCCCCCC"]
+        scores = compute_diversity_scores(seqs, kmer_size=3)
+        assert scores[2] > scores[0]
 
     def test_min_log2_enrichment_filter(self):
         candidates = [
@@ -225,3 +318,117 @@ class TestFilterRank:
         ranked = filter_and_rank(candidates, structures, scores, config)
         assert len(ranked) == 1
         assert ranked[0].aptamer_id == "APT_1"
+
+    def test_filter_rank_neutralizes_structure_without_vienna(self, monkeypatch):
+        candidates = [AptamerCandidate(id="APT_1", sequence="ACGTACGTACGT", length=12, gc=0.5)]
+        structures = [
+            StructureResult(
+                aptamer_id="APT_1",
+                sequence="ACGTACGTACGT",
+                structure="(((....)))..",
+                mfe=5.0,
+                n_stems=0,
+                n_loops=0,
+                n_bulges=0,
+                has_g_quadruplex=False,
+                motif_count=0,
+            )
+        ]
+        scores = [
+            BindingScore(
+                aptamer_id="APT_1",
+                score=0.9,
+                features={
+                    "log2_enrichment": 2.0,
+                    "trend_slope": 1.0,
+                    "pace_consistency": 0.9,
+                    "final_round_cpm": 1000.0,
+                },
+            )
+        ]
+        config = {
+            "filtering": {"top_n": 10, "min_complexity": 3, "min_log2_enrichment": 0.0},
+            "structure": {"mfe_threshold": -5.0},
+            "scoring": {
+                "weights": {
+                    "enrichment_growth": 0.7,
+                    "structural_stability": 0.2,
+                    "sequence_diversity": 0.1,
+                }
+            },
+        }
+
+        monkeypatch.setattr("src.filter_rank.VIENNA_AVAILABLE", False)
+        ranked = filter_and_rank(candidates, structures, scores, config)
+        assert len(ranked) == 1
+        assert ranked[0].stability_score == 0.5
+
+
+class TestPipelineStages:
+    def test_run_pipeline_scoring_stage_runs_prerequisites(self, tmp_path):
+        counts_path = tmp_path / "counts.csv"
+        counts_path.write_text(
+            "sequence,round_1,round_2,round_3\n"
+            "ACGTACGTACGT,10,25,80\n"
+            "TGCATGCATGCA,8,12,9\n"
+        )
+        target_path = tmp_path / "target.fasta"
+        target_path.write_text(">target\nMKWVTFISLLLLFSSAYS\n")
+
+        config = {
+            "target": {"input_type": "fasta", "input_value": str(target_path), "name": "target"},
+            "library": {
+                "length_min": 10,
+                "length_max": 60,
+                "gc_min": 0.30,
+                "gc_max": 0.80,
+                "max_homopolymer": 4,
+                "min_total_count": 1,
+            },
+            "selex": {"counts_file": str(counts_path), "round_prefix": "round_"},
+            "structure": {"temperature": 37.0, "mfe_threshold": -5.0},
+            "scoring": {"pseudocount": 1.0},
+            "output": {"directory": str(tmp_path / "out"), "generate_plots": False, "verbose": False},
+        }
+
+        results = run_pipeline(config, stage="scoring")
+        assert "binding_scores" in results
+        assert len(results["binding_scores"]) == 2
+
+
+class TestStoppingDiagnostic:
+    def test_evaluate_stopping_point_uses_full_pool_for_raw_coverage(self):
+        counts_rows = [
+            {"sequence": "WINNER", "round_1": 10, "round_2": 900},
+            {"sequence": "RANKED_A", "round_1": 20, "round_2": 50},
+            {"sequence": "RANKED_B", "round_1": 30, "round_2": 50},
+        ]
+        ranked_rows = [
+            {
+                "rank": "1",
+                "aptamer_id": "APT_A",
+                "sequence": "RANKED_A",
+                "trend_slope": "1.0",
+                "pace_consistency": "0.8",
+            },
+            {
+                "rank": "2",
+                "aptamer_id": "APT_B",
+                "sequence": "RANKED_B",
+                "trend_slope": "0.8",
+                "pace_consistency": "0.7",
+            },
+        ]
+        round_totals = {"round_1": 60, "round_2": 1000}
+
+        summary, detail = evaluate_stopping_point(
+            counts_rows=counts_rows,
+            ranked_rows=ranked_rows,
+            rounds=["round_1", "round_2"],
+            round_totals=round_totals,
+            top_n_for_pace=2,
+        )
+
+        assert summary.top1_coverage_raw_pct == 90.0
+        assert detail["top10_final_round"][0]["sequence"] == "WINNER"
+        assert detail["top10_final_round"][0]["aptamer_id"] is None

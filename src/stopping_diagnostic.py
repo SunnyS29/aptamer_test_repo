@@ -89,6 +89,13 @@ def _top_k_by_round(
     return scored[:k]
 
 
+def _aptamer_id_for_sequence(ranked_rows: list[dict], sequence: str) -> str | None:
+    for row in ranked_rows:
+        if row["sequence"] == sequence:
+            return row["aptamer_id"]
+    return None
+
+
 def _trajectory_markers_for_top3(
     top3_ranked: list[dict],
     by_sequence: dict[str, dict],
@@ -252,16 +259,15 @@ def evaluate_stopping_point(
     if len(rounds) < 2:
         raise ValueError("Need at least two rounds to run stopping-point diagnostics.")
 
+    by_sequence = {r["sequence"]: r for r in counts_rows}
     ranked_seq = {r["sequence"] for r in ranked_rows}
-    pool_rows = [r for r in counts_rows if r["sequence"] in ranked_seq]
-    if not pool_rows:
+    if not any(seq in by_sequence for seq in ranked_seq):
         raise ValueError("No overlap between ranked output and count table sequences.")
 
-    by_sequence = {r["sequence"]: r for r in pool_rows}
     prev_round, final_round = rounds[-2], rounds[-1]
 
-    top10_final = _top_k_by_round(pool_rows, final_round, round_totals, 10)
-    top10_prev = _top_k_by_round(pool_rows, prev_round, round_totals, 10)
+    top10_final = _top_k_by_round(counts_rows, final_round, round_totals, 10)
+    top10_prev = _top_k_by_round(counts_rows, prev_round, round_totals, 10)
     seq_final = {s for _, s in top10_final}
     seq_prev = {s for _, s in top10_prev}
     overlap = len(seq_final & seq_prev)
@@ -273,7 +279,7 @@ def evaluate_stopping_point(
         top3_ranked, by_sequence, rounds, round_totals
     )
 
-    cov = _coverage_metrics(pool_rows, final_round, round_totals[final_round])
+    cov = _coverage_metrics(counts_rows, final_round, round_totals[final_round])
 
     top_pace = ranked_rows[: min(top_n_for_pace, len(ranked_rows))]
     pace_mean, pace_median, pace_cv, pace_ge_07 = _pace_metrics(top_pace)
@@ -331,11 +337,19 @@ def evaluate_stopping_point(
         "previous_round": prev_round,
         "final_round": final_round,
         "top10_previous_round": [
-            {"aptamer_id": next(r["aptamer_id"] for r in ranked_rows if r["sequence"] == seq), "cpm": round(cpm, 2)}
+            {
+                "aptamer_id": _aptamer_id_for_sequence(ranked_rows, seq),
+                "sequence": seq,
+                "cpm": round(cpm, 2),
+            }
             for cpm, seq in top10_prev
         ],
         "top10_final_round": [
-            {"aptamer_id": next(r["aptamer_id"] for r in ranked_rows if r["sequence"] == seq), "cpm": round(cpm, 2)}
+            {
+                "aptamer_id": _aptamer_id_for_sequence(ranked_rows, seq),
+                "sequence": seq,
+                "cpm": round(cpm, 2),
+            }
             for cpm, seq in top10_final
         ],
         "top3_trajectory_details": slope_details,

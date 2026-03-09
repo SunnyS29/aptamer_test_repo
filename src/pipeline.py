@@ -132,8 +132,14 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
     output_config = config.get("output", {})
     output_dir = ensure_output_dir(output_config.get("directory", "output"))
 
+    needs_target = stage in ("target", "scoring", "filtering", "all")
+    needs_library = stage in ("library", "structure", "scoring", "filtering", "all")
+    needs_structure = stage in ("structure", "scoring", "filtering", "all")
+    needs_scoring = stage in ("scoring", "filtering", "all")
+    needs_filtering = stage in ("filtering", "all")
+
     # Station 4: Security Check (target context must be valid before scoring).
-    if stage in ("target", "all"):
+    if needs_target:
         logger.info("=" * 60)
         logger.info("STAGE 1: Target Analysis")
         logger.info("=" * 60)
@@ -145,7 +151,7 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
             return results
 
     # Station 1 + 2: The Scanner + The Starting Line (real counts + CPM-ready candidates).
-    if stage in ("library", "all"):
+    if needs_library:
         logger.info("=" * 60)
         logger.info("STAGE 2: SELEX Count Ingestion")
         logger.info("=" * 60)
@@ -157,7 +163,7 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
             return results
 
     # Structure features are optional support signals used during The Winning Bunch.
-    if stage in ("structure", "all"):
+    if needs_structure:
         if "candidates" not in results:
             logger.error(
                 "Library generation must run before structure prediction. "
@@ -175,7 +181,7 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
             return results
 
     # Station 3: The Race Begins scoring from round trajectories.
-    if stage in ("scoring", "all"):
+    if needs_scoring:
         if "candidates" not in results or "structures" not in results:
             logger.error(
                 "Previous stages must run before scoring. "
@@ -200,7 +206,7 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
             return results
 
     # Station 5: The Winning Bunch filtering + shortlist ranking.
-    if stage in ("filtering", "all"):
+    if needs_filtering:
         required = ["candidates", "structures", "binding_scores"]
         if not all(k in results for k in required):
             logger.error(

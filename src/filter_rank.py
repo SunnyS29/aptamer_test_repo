@@ -7,6 +7,8 @@ We use enrichment as the main signal, then add structure/diversity as tie-breake
 import logging
 from dataclasses import dataclass
 
+from src.structure_predictor import VIENNA_AVAILABLE
+
 logger = logging.getLogger("aptamer_pipeline")
 
 
@@ -185,6 +187,11 @@ def filter_and_rank(candidates: list, structures: list,
 
     logger.info(f"Filtering candidates: mfe_threshold={mfe_threshold}, "
                 f"min_complexity={min_complexity}")
+    if not VIENNA_AVAILABLE:
+        logger.warning(
+            "ViennaRNA is unavailable, so structural filtering/scoring will stay neutral. "
+            "Tip: install ViennaRNA if you want structure to affect ranking."
+        )
 
     # First pass: hard filters remove obvious non-winners before weighted ranking.
     filtered_ids = []
@@ -193,10 +200,11 @@ def filter_and_rank(candidates: list, structures: list,
         score = score_map.get(candidate.id)
         if struct is None or score is None:
             continue
-        if struct.mfe > mfe_threshold:
-            continue
-        if struct.motif_count < min_complexity:
-            continue
+        if VIENNA_AVAILABLE:
+            if struct.mfe > mfe_threshold:
+                continue
+            if struct.motif_count < min_complexity:
+                continue
         if min_log2_enrichment is not None:
             seq_log2 = score.features.get("log2_enrichment", 0.0)
             if seq_log2 < float(min_log2_enrichment):
@@ -212,7 +220,7 @@ def filter_and_rank(candidates: list, structures: list,
         struct = struct_map[apt_id]
         binding = score_map[apt_id]
 
-        stability = compute_stability_score(struct.mfe, all_mfe)
+        stability = compute_stability_score(struct.mfe, all_mfe) if VIENNA_AVAILABLE else 0.5
         diversity = diversity_map.get(apt_id, 0.5)
 
         composite = (

@@ -95,6 +95,17 @@ What this does:
 Helpful tip:
 - If you do not pass `--round-labels`, we try to guess rounds from file names like `round_3`, `r3`, or `rnd3`.
 - If round numbers are not in file names, files are sorted alphabetically.
+- If your FASTQ reads still include constant primer regions, add `--left-anchor` and `--right-anchor` so we count only the variable insert.
+
+Example with anchor extraction:
+```bash
+python -m src.fasta_round_counter \
+  data/run_round1.fastq.gz \
+  data/run_round2.fastq.gz \
+  --left-anchor AGACGCAACTGAATGAA \
+  --right-anchor CCGTAACTAGTCGCGTCAC \
+  --output data/run_counts.csv
+```
 
 ## Supported Input Formats
 
@@ -183,6 +194,7 @@ Edit `config/pipeline_config.yaml`:
 - Keep a record of threshold changes so we can justify shortlist criteria later.
 - If you see **"scoring.diversity_kmer_size must be >= 1"**, set `scoring.diversity_kmer_size` to `3` and rerun.
 - If ranking still feels slow, raise `library.min_total_count` to reduce the candidate pool before Station 5.
+- If ViennaRNA is not installed, structure stays neutral instead of steering the ranking.
 
 ## Project Structure
 
