@@ -25,7 +25,8 @@ Everything in this README is written so that anyone can interact with the tool a
 
 ### 3. The Race Begins (Enrichment Scoring)
 - For each sequence, we look at how CPM changes across rounds.
-- We use two signals together: first-to-last log2 enrichment and overall trend slope.
+- We use three signals together: first-to-last log2 enrichment, overall trend slope, and pace consistency.
+- Pace consistency rewards sequences that climb smoothly instead of jumping late in one spike.
 - Sequences with strong and steady rise get higher enrichment scores.
 
 ### 4. Security Check (Target Verification)
@@ -36,6 +37,7 @@ Everything in this README is written so that anyone can interact with the tool a
 ### 5. The Winning Bunch (Filtering + Ranking)
 - We remove weak candidates using enrichment and structure thresholds.
 - We compute a composite score where enrichment is the primary driver, and structure/diversity help break ties.
+- Diversity is computed with a pooled k-mer rarity score (near-linear runtime), not all-vs-all pairwise distances.
 - The output shortlist is saved to CSV/JSON for downstream review.
 
 ## Quick Start
@@ -62,6 +64,29 @@ Run one station for debugging:
 python -m src.pipeline --config config/pipeline_config.yaml --stage library
 ```
 
+### Convert FASTQ/FASTA Rounds to Pipeline Input
+If your lab gives you one sequencing file per round (`.fastq`, `.fastq.gz`, `.fasta`, or `.fasta.gz`), run this first:
+
+```bash
+python -m src.fasta_round_counter \
+  data/PRJDB9110/DRR201861.fastq.gz \
+  data/PRJDB9110/DRR201862.fastq.gz \
+  data/PRJDB9110/DRR201863.fastq.gz \
+  --output data/PRJDB9110/prjdb9110_round_counts.csv \
+  --round-labels round_0 round_1 round_2 \
+  --summary data/PRJDB9110/prjdb9110_round_summary.tsv
+```
+
+Then point your config to the new counts table:
+
+```yaml
+selex:
+  counts_file: "data/PRJDB9110/prjdb9110_round_counts.csv"
+```
+
+Tip: if you skip `--round-labels`, we infer round names from filenames like `round_3`, `r3`, or `rnd3`.
+If names do not include round numbers, files are sorted alphabetically.
+
 ## Supported Input Formats
 
 ### Wide format
@@ -78,6 +103,11 @@ ACGT...,round_1,10
 ACGT...,round_2,25
 ```
 
+### Raw Round Files (Pre-Step)
+- Supported: `.fastq`, `.fastq.gz`, `.fasta`, `.fasta.gz`
+- Each file should represent one SELEX round.
+- Use `python -m src.fasta_round_counter ...` to build the wide table above.
+
 ## Configuration Cheat Sheet
 
 Edit `config/pipeline_config.yaml`:
@@ -86,6 +116,8 @@ Edit `config/pipeline_config.yaml`:
 - `selex.counts_file`: the counts table path
 - `library`: sequence QC filters (length, GC, homopolymer, min total count)
 - `scoring`: pseudocount + growth weights
+- `scoring.vectorized_metrics`: set `true` to speed up pace/slope calculations with NumPy on large libraries (default `false`)
+- `scoring.diversity_kmer_size`: k-mer size used for diversity rarity scoring (default `3`)
 - `filtering`: shortlist strictness (`top_n`, `min_log2_enrichment`, structure limits)
 - `output`: file format + output directory
 
@@ -95,6 +127,8 @@ Edit `config/pipeline_config.yaml`:
 - If the pipeline says **"Could not find a sequence column"**, don't panic.
 - It usually means column headers are inconsistent.
 - Tip: rename the sequence column to `sequence` and rerun.
+- If conversion fails with **"Unsupported input format"**, check file suffixes.
+- Tip: rename files to `.fastq(.gz)` or `.fasta(.gz)` and rerun the converter.
 
 ### The Starting Line
 - If you see **"One or more rounds have zero total reads"**, normalization cannot proceed safely.
@@ -104,7 +138,8 @@ Edit `config/pipeline_config.yaml`:
 ### The Race Begins
 - If scores look flat (many near 0.5), your trajectories may be too similar or too sparse.
 - That is not a code crash, but it is a signal to inspect round quality and `min_total_count`.
-- Tip: inspect `log2_enrichment` and `trend_slope` in exported results.
+- Tip: inspect `log2_enrichment`, `trend_slope`, and `pace_consistency` in exported results.
+- If this stage is slow with very large candidate sets, try `scoring.vectorized_metrics: true`.
 
 ### Security Check
 - If you see **"Failed to fetch PDB target"** or **"No sequence found"**, the run is correctly blocking unsafe analysis.
@@ -115,6 +150,8 @@ Edit `config/pipeline_config.yaml`:
 - If you get **"No candidates passed filters"**, the filters are likely too strict for the current dataset.
 - Tip: loosen `min_log2_enrichment`, `mfe_threshold`, or `min_complexity` gradually and rerun.
 - Keep a record of threshold changes so we can justify shortlist criteria later.
+- If you see **"scoring.diversity_kmer_size must be >= 1"**, set `scoring.diversity_kmer_size` to `3` and rerun.
+- If ranking still feels slow, raise `library.min_total_count` to reduce the candidate pool before Station 5.
 
 ## Project Structure
 
@@ -134,3 +171,22 @@ src/
 ```bash
 python -m pytest tests/ -v
 ```
+
+## Stopping-Point Diagnostic
+
+Use this when you want a quick health check on whether SELEX rounds are converging:
+
+```bash
+python -m src.stopping_diagnostic --config config/pipeline_config.yaml
+```
+
+It reports four universal markers:
+- Leaderboard stability between the last two rounds
+- Top-candidate slope trajectory (acceleration/deceleration)
+- Pool dominance coverage (top 1 / 10 / 100)
+- Pace consistency across top-ranked candidates
+
+Recommendation output:
+- `A`: Sequence more rounds
+- `B`: Stop and validate
+- `C`: Potential over-selection, review earlier rounds
