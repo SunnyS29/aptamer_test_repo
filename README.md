@@ -64,8 +64,11 @@ Run one station for debugging:
 python -m src.pipeline --config config/pipeline_config.yaml --stage library
 ```
 
-### Convert FASTQ/FASTA Rounds to Pipeline Input
-If your lab gives you one sequencing file per round (`.fastq`, `.fastq.gz`, `.fasta`, or `.fasta.gz`), run this first:
+### Convert Raw Sequencing Files (Simple 3-Step Guide)
+Use this if you have one file per round (`.fastq`, `.fastq.gz`, `.fasta`, or `.fasta.gz`).
+
+1. Put your round files in one folder.
+2. Run this command (copy/paste, then replace file names):
 
 ```bash
 python -m src.fasta_round_counter \
@@ -77,36 +80,64 @@ python -m src.fasta_round_counter \
   --summary data/PRJDB9110/prjdb9110_round_summary.tsv
 ```
 
-Then point your config to the new counts table:
+3. Tell the pipeline to use the new counts file:
 
 ```yaml
 selex:
   counts_file: "data/PRJDB9110/prjdb9110_round_counts.csv"
 ```
 
-Tip: if you skip `--round-labels`, we infer round names from filenames like `round_3`, `r3`, or `rnd3`.
-If names do not include round numbers, files are sorted alphabetically.
+What this does:
+- Reads each round file.
+- Counts how many times each sequence appears.
+- Builds one table the pipeline can compare across rounds.
+
+Helpful tip:
+- If you do not pass `--round-labels`, we try to guess rounds from file names like `round_3`, `r3`, or `rnd3`.
+- If round numbers are not in file names, files are sorted alphabetically.
 
 ## Supported Input Formats
 
-### Wide format
+Use any one of these options.
+
+### Option 1 (Easiest): One table with one row per sequence
+Your file can be `.csv` or `.tsv`.
+
 ```csv
 sequence,round_1,round_2,round_3
 ACGT...,10,25,80
 TGCA...,8,12,9
 ```
 
-### Long format
+What matters:
+- First column is sequence text (`sequence`).
+- Each round has its own count column (`round_1`, `round_2`, etc.).
+
+### Option 2: Long table (one row per sequence per round)
+Use this if your export is already in long format.
+
 ```csv
 sequence,round,count
 ACGT...,round_1,10
 ACGT...,round_2,25
 ```
 
-### Raw Round Files (Pre-Step)
+What matters:
+- Must include all three columns: `sequence`, `round`, `count`.
+- Counts must be whole numbers (no decimals).
+
+### Option 3: Raw sequencing files (FASTQ/FASTA)
+Use this when you start from raw files from the sequencer.
+
 - Supported: `.fastq`, `.fastq.gz`, `.fasta`, `.fasta.gz`
-- Each file should represent one SELEX round.
-- Use `python -m src.fasta_round_counter ...` to build the wide table above.
+- One file should represent one round.
+- Convert first with `python -m src.fasta_round_counter ...`
+- Then run the pipeline on the new counts table.
+
+Common input mistakes:
+- Missing `sequence` column name.
+- A round column with all zeros.
+- Mixed files from different experiments in one run.
 
 ## Configuration Cheat Sheet
 
