@@ -40,6 +40,74 @@ Everything in this README is written so that anyone can interact with the tool a
 - Diversity is computed with a pooled k-mer rarity score (near-linear runtime), not all-vs-all pairwise distances.
 - The output shortlist is saved to CSV/JSON for downstream review.
 
+## How The Race Works
+
+This is the plain-language version of what the pipeline is doing under the hood.
+Think of every sequence as a runner in a stadium. We are not just asking who looked good once. We are asking who keeps moving toward the front as the race gets harder.
+
+### 1. The Trimmer
+- Job: if raw FASTQ reads still contain constant primer regions, we cut those away and keep only the variable insert.
+- Why it matters: otherwise we risk ranking sequencing constructs instead of real aptamer candidates.
+- Math behind it: pattern matching, not a statistical model. We look for a left anchor and a right anchor and keep the sequence between them. We can also check the reverse complement if reads come in the opposite orientation.
+
+### 2. The Counter
+- Job: count how many times each sequence appears in each round.
+- Why it matters: this gives us the raw race table.
+- Math behind it: empirical frequency counting. No prediction yet, just observed abundance.
+
+### 3. The Equalizer
+- Job: convert raw counts into CPM, or counts per million.
+- Formula: `CPM = count / total_round_reads * 1,000,000`
+- Why it matters: rounds often have different sequencing depth, so raw counts alone are not fair.
+- Simple meaning: CPM tells us how much of the pool a sequence owns in that round.
+
+### 4. The Growth Judge
+- Job: score how strongly and how steadily a sequence grows across rounds.
+- Exact methods used:
+- `log2` enrichment: measures doubling-like growth from first round to last round.
+- Least-squares slope: fits a straight trend line across rounds to measure overall upward movement.
+- Monotonicity: checks how often a sequence avoids going backwards from one round to the next.
+- RMSE: measures how far the real trajectory wiggles away from the fitted trend line.
+- Min-max scaling: rescales the growth features to `0-1` so they can be combined fairly.
+- Weighted sum: fold change `0.60`, slope `0.20`, pace consistency `0.20`.
+- Simple meaning: we reward sequences that climb hard and climb smoothly.
+
+### 5. The Shape Check
+- Job: add secondary-structure context as a supporting signal.
+- Exact methods used:
+- ViennaRNA minimum free energy, if installed.
+- Dot-bracket motif counting for stems, loops, and bulges.
+- G-quadruplex pattern detection with a sequence regex.
+- Important note: if ViennaRNA is not installed, structure now stays neutral instead of pretending the fallback is real biology.
+
+### 6. The Winning Bunch
+- Job: build the final shortlist.
+- Exact methods used:
+- Stability score: min-max normalized MFE.
+- Diversity score: k-mer rarity across the candidate pool.
+- Weighted sum: enrichment growth `0.70`, structural stability `0.20`, sequence diversity `0.10`.
+- Simple meaning: growth is the main decision-maker, while structure and diversity help break ties.
+
+### 7. The Finish-Line Referee
+- Job: decide whether the experiment looks mature enough to stop.
+- Exact methods used:
+- Top-10 overlap percentage between the last two rounds.
+- Jaccard index for set similarity of the two leaderboards.
+- Coverage percentages for the top 1, top 10, and top 100 sequences.
+- Mean acceleration of the top 3 trajectories.
+- Mean, median, and coefficient of variation of the pace score.
+- A composite data quality score and a rule-based recommendation.
+
+### Real Example From Our Recent Run
+- In corrected `PRJDB9110`, `APT_000008` was stronger at `round_6` with `111,592.33 CPM` and rank `1`.
+- `APT_000001` was still back at `8,304.03 CPM` and rank `12` in `round_6`.
+- By `round_8`, `APT_000001` surged to `246,481.38 CPM` and rank `1`.
+- Over the same stretch, `APT_000008` dropped to `27,386.82 CPM` and rank `8`.
+- That is exactly why the pipeline does not just pick whoever is loudest in one round. It is built to find the sequences that keep gaining ground as selection pressure increases.
+
+### One-Sentence Professional Summary
+- The pipeline trims reads to the true insert, counts each sequence across rounds, normalizes for sequencing depth, scores enrichment on a log scale with trend and pace terms, and then ranks the shortlist using enrichment as the primary signal and structure/diversity as supporting signals.
+
 ## Quick Start
 
 ### Install
