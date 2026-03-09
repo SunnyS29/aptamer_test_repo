@@ -1,0 +1,53 @@
+# PRJNA1221092 (SRP562315) empirical SELEX run config.
+# This points the pipeline at anchor-extracted insert counts from rounds
+# 1, 3, 7, 12, and 14.
+
+target:
+  input_type: "fasta"
+  input_value: "data/sample_targets.fasta"
+  name: "prjna1221092_target_context"
+
+library:
+  length_min: 20
+  length_max: 120
+  gc_min: 0.30
+  gc_max: 0.85
+  max_homopolymer: 6
+  min_total_count: 1000
+
+selex:
+  counts_file: "data/PRJNA1221092/prjna1221092_round_counts_insert.csv"
+  round_columns:
+    - "round_1"
+    - "round_3"
+    - "round_7"
+    - "round_12"
+    - "round_14"
+
+structure:
+  temperature: 37.0
+  mfe_threshold: -5.0
+
+scoring:
+  pseudocount: 1.0
+  vectorized_metrics: false
+  diversity_kmer_size: 3
+  growth_weights:
+    fold_change: 0.60
+    trend: 0.20
+    pace_consistency: 0.20
+  weights:
+    enrichment_growth: 0.70
+    structural_stability: 0.20
+    sequence_diversity: 0.10
+
+filtering:
+  top_n: 100
+  min_complexity: 1
+  min_log2_enrichment: 0.0
+
+output:
+  format: "both"
+  directory: "output/prjna1221092"
+  generate_plots: false
+  verbose: true
