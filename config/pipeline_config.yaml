@@ -23,9 +23,12 @@ structure:
 
 scoring:
   pseudocount: 1.0
+  vectorized_metrics: false
+  diversity_kmer_size: 3
   growth_weights:
-    fold_change: 0.75
-    trend: 0.25
+    fold_change: 0.60
+    trend: 0.20
+    pace_consistency: 0.20
   weights:
     enrichment_growth: 0.70
     structural_stability: 0.20

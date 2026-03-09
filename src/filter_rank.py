@@ -25,6 +25,7 @@ class RankedCandidate:
     binding_score: float
     log2_enrichment: float
     trend_slope: float
+    pace_consistency: float
     final_round_cpm: float
     stability_score: float
     diversity_score: float
@@ -44,6 +45,7 @@ class RankedCandidate:
             "binding_score": round(self.binding_score, 4),
             "log2_enrichment": round(self.log2_enrichment, 4),
             "trend_slope": round(self.trend_slope, 4),
+            "pace_consistency": round(self.pace_consistency, 4),
             "final_round_cpm": round(self.final_round_cpm, 4),
             "stability_score": round(self.stability_score, 4),
             "diversity_score": round(self.diversity_score, 4),
@@ -62,42 +64,62 @@ def compute_stability_score(mfe: float, mfe_values: list[float]) -> float:
 
 
 def compute_diversity_score(sequence: str, all_sequences: list[str]) -> float:
-    """Score sequence diversity based on edit distance from library centroid.
+    """Backwards-compatible single-sequence diversity score.
 
-    Higher score = more unique sequence in the library.
+    This delegates to the pooled scorer so filter/rank can compute all diversity
+    values in one pass instead of quadratic pairwise comparisons.
     """
     if len(all_sequences) <= 1:
         return 1.0
 
-    # 3-mer Jaccard distance is a fast, interpretable diversity proxy.
-    # We use it so highly similar sequences do not dominate the final shortlist.
-    def kmer_set(seq, k=3):
-        return set(seq[i:i+k] for i in range(len(seq) - k + 1))
-
-    target_kmers = kmer_set(sequence)
-    distances = []
-
-    # Find the first occurrence of this sequence to use as self-index
+    scores = compute_diversity_scores(all_sequences, kmer_size=3)
     try:
-        self_idx = all_sequences.index(sequence)
+        return scores[all_sequences.index(sequence)]
     except ValueError:
-        self_idx = -1
-
-    for i, other_seq in enumerate(all_sequences):
-        if i == self_idx:
-            continue
-        other_kmers = kmer_set(other_seq)
-        union = len(target_kmers | other_kmers)
-        if union == 0:
-            continue
-        jaccard_dist = 1.0 - len(target_kmers & other_kmers) / union
-        distances.append(jaccard_dist)
-
-    if not distances:
         return 0.5
 
-    avg_distance = sum(distances) / len(distances)
-    return min(avg_distance * 2, 1.0)  # Scale up, cap at 1.0
+
+def _kmer_set(sequence: str, kmer_size: int) -> set[str]:
+    """Return unique k-mers for a sequence."""
+    if kmer_size < 1:
+        raise ValueError("diversity_kmer_size must be >= 1.")
+    if len(sequence) < kmer_size:
+        return set()
+    return {sequence[i:i + kmer_size] for i in range(len(sequence) - kmer_size + 1)}
+
+
+def compute_diversity_scores(all_sequences: list[str], kmer_size: int = 3) -> list[float]:
+    """Compute diversity scores for an entire pool in near-linear time.
+
+    Score intuition:
+    - We reward sequences carrying rare k-mers across the candidate pool.
+    - Common k-mers contribute less signal.
+
+    Complexity:
+    - O(total unique k-mers across all sequences), versus O(n^2) pairwise distance.
+    """
+    if not all_sequences:
+        return []
+    if len(all_sequences) == 1:
+        return [1.0]
+
+    kmer_sets = [_kmer_set(seq, kmer_size) for seq in all_sequences]
+
+    # Document frequency: how many sequences contain each k-mer.
+    kmer_df: dict[str, int] = {}
+    for kmers in kmer_sets:
+        for kmer in kmers:
+            kmer_df[kmer] = kmer_df.get(kmer, 0) + 1
+
+    pool_size = len(all_sequences)
+    scores = []
+    for kmers in kmer_sets:
+        if not kmers:
+            scores.append(0.5)
+            continue
+        rarity = [1.0 - (kmer_df[k] / pool_size) for k in kmers]
+        scores.append(sum(rarity) / len(rarity))
+    return scores
 
 
 def filter_and_rank(candidates: list, structures: list,
@@ -123,6 +145,12 @@ def filter_and_rank(candidates: list, structures: list,
     mfe_threshold = structure_config.get("mfe_threshold", -5.0)
 
     weights = scoring_config.get("weights", {})
+    diversity_kmer_size = int(scoring_config.get("diversity_kmer_size", 3))
+    if diversity_kmer_size < 1:
+        raise ValueError(
+            "scoring.diversity_kmer_size must be >= 1. "
+            "Tip: use 3 for a balanced speed/specificity default."
+        )
     w_binding = weights.get("enrichment_growth", weights.get("binding_affinity", 0.70))
     w_stability = weights.get("structural_stability", 0.20)
     w_diversity = weights.get("sequence_diversity", 0.10)
@@ -142,6 +170,12 @@ def filter_and_rank(candidates: list, structures: list,
     # comparable scales before composite weighting.
     all_mfe = [s.mfe for s in structures]
     all_sequences = [c.sequence for c in candidates]
+    diversity_scores = compute_diversity_scores(
+        all_sequences, kmer_size=diversity_kmer_size
+    )
+    diversity_map = {
+        candidate.id: diversity_scores[idx] for idx, candidate in enumerate(candidates)
+    }
     if not all_mfe:
         logger.warning(
             "No structure predictions available for ranking. "
@@ -179,7 +213,7 @@ def filter_and_rank(candidates: list, structures: list,
         binding = score_map[apt_id]
 
         stability = compute_stability_score(struct.mfe, all_mfe)
-        diversity = compute_diversity_score(candidate.sequence, all_sequences)
+        diversity = diversity_map.get(apt_id, 0.5)
 
         composite = (
             w_binding * binding.score +
@@ -200,6 +234,7 @@ def filter_and_rank(candidates: list, structures: list,
             binding_score=binding.score,
             log2_enrichment=float(binding.features.get("log2_enrichment", 0.0)),
             trend_slope=float(binding.features.get("trend_slope", 0.0)),
+            pace_consistency=float(binding.features.get("pace_consistency", 0.0)),
             final_round_cpm=float(binding.features.get("final_round_cpm", 0.0)),
             stability_score=stability,
             diversity_score=diversity,

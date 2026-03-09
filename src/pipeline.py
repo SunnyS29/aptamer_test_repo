@@ -288,11 +288,12 @@ Examples:
 
     if "ranked" in results and results["ranked"]:
         print(f"\nTop 5 candidates:")
-        print(f"{'Rank':<6}{'ID':<14}{'Score':<10}{'log2E':<10}{'MFE':<10}{'Length':<8}{'GC':<8}")
-        print("-" * 68)
+        print(f"{'Rank':<6}{'ID':<14}{'Score':<10}{'log2E':<10}{'Pace':<10}{'MFE':<10}{'Length':<8}{'GC':<8}")
+        print("-" * 78)
         for r in results["ranked"][:5]:
             print(f"{r.rank:<6}{r.aptamer_id:<14}{r.composite_score:<10.4f}"
-                  f"{r.log2_enrichment:<10.3f}{r.mfe:<10.1f}{r.length:<8}{r.gc_content:<8.3f}")
+                  f"{r.log2_enrichment:<10.3f}{r.pace_consistency:<10.3f}"
+                  f"{r.mfe:<10.1f}{r.length:<8}{r.gc_content:<8.3f}")
 
 
 if __name__ == "__main__":
