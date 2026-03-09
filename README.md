@@ -98,16 +98,6 @@ Think of every sequence as a runner in a stadium. We are not just asking who loo
 - Mean, median, and coefficient of variation of the pace score.
 - A composite data quality score and a rule-based recommendation.
 
-### Real Example From Our Recent Run
-- In corrected `PRJDB9110`, `APT_000008` was stronger at `round_6` with `111,592.33 CPM` and rank `1`.
-- `APT_000001` was still back at `8,304.03 CPM` and rank `12` in `round_6`.
-- By `round_8`, `APT_000001` surged to `246,481.38 CPM` and rank `1`.
-- Over the same stretch, `APT_000008` dropped to `27,386.82 CPM` and rank `8`.
-- That is exactly why the pipeline does not just pick whoever is loudest in one round. It is built to find the sequences that keep gaining ground as selection pressure increases.
-
-### One-Sentence Professional Summary
-- The pipeline trims reads to the true insert, counts each sequence across rounds, normalizes for sequencing depth, scores enrichment on a log scale with trend and pace terms, and then ranks the shortlist using enrichment as the primary signal and structure/diversity as supporting signals.
-
 ## Quick Start
 
 ### Install
