@@ -26,9 +26,9 @@ scoring:
   vectorized_metrics: false
   diversity_kmer_size: 3
   growth_weights:
-    fold_change: 0.60
-    trend: 0.20
-    pace_consistency: 0.20
+    fold_change: 0.80
+    trend: 0.15
+    terminal_guardrail: 0.05
   weights:
     enrichment_growth: 0.70
     structural_stability: 0.20

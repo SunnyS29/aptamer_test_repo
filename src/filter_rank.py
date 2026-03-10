@@ -28,6 +28,7 @@ class RankedCandidate:
     log2_enrichment: float
     trend_slope: float
     pace_consistency: float
+    terminal_guardrail: float
     final_round_cpm: float
     stability_score: float
     diversity_score: float
@@ -48,6 +49,7 @@ class RankedCandidate:
             "log2_enrichment": round(self.log2_enrichment, 4),
             "trend_slope": round(self.trend_slope, 4),
             "pace_consistency": round(self.pace_consistency, 4),
+            "terminal_guardrail": round(self.terminal_guardrail, 4),
             "final_round_cpm": round(self.final_round_cpm, 4),
             "stability_score": round(self.stability_score, 4),
             "diversity_score": round(self.diversity_score, 4),
@@ -243,6 +245,7 @@ def filter_and_rank(candidates: list, structures: list,
             log2_enrichment=float(binding.features.get("log2_enrichment", 0.0)),
             trend_slope=float(binding.features.get("trend_slope", 0.0)),
             pace_consistency=float(binding.features.get("pace_consistency", 0.0)),
+            terminal_guardrail=float(binding.features.get("terminal_guardrail", 0.0)),
             final_round_cpm=float(binding.features.get("final_round_cpm", 0.0)),
             stability_score=stability,
             diversity_score=diversity,

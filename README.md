@@ -25,9 +25,9 @@ Everything in this README is written so that anyone can interact with the tool a
 
 ### 3. The Race Begins (Enrichment Scoring)
 - For each sequence, we look at how CPM changes across rounds.
-- We use three signals together: first-to-last log2 enrichment, overall trend slope, and pace consistency.
-- Pace consistency rewards sequences that climb smoothly instead of jumping late in one spike.
-- Sequences with strong and steady rise get higher enrichment scores.
+- We use three signals together: first-to-last log2 enrichment, overall trend slope, and a light terminal guardrail.
+- Log2 enrichment and slope do the main ranking work.
+- The terminal guardrail is there to catch sequences that fade in the last round, not to punish step-function winners that take off late.
 
 ### 4. Security Check (Target Verification)
 - We fetch target information from PDB/UniProt (or read FASTA).
@@ -62,15 +62,16 @@ Think of every sequence as a runner in a stadium. We are not just asking who loo
 - Simple meaning: CPM tells us how much of the pool a sequence owns in that round.
 
 ### 4. The Growth Judge
-- Job: score how strongly and how steadily a sequence grows across rounds.
+- Job: score how strongly a sequence takes over the pool, while still checking that it does not fade at the finish.
 - Exact methods used:
 - `log2` enrichment: measures doubling-like growth from first round to last round.
 - Least-squares slope: fits a straight trend line across rounds to measure overall upward movement.
 - Monotonicity: checks how often a sequence avoids going backwards from one round to the next.
 - RMSE: measures how far the real trajectory wiggles away from the fitted trend line.
+- Terminal guardrail: checks whether the last round goes down versus the round before it.
 - Min-max scaling: rescales the growth features to `0-1` so they can be combined fairly.
-- Weighted sum: fold change `0.60`, slope `0.20`, pace consistency `0.20`.
-- Simple meaning: we reward sequences that climb hard and climb smoothly.
+- Weighted sum: fold change `0.80`, slope `0.15`, terminal guardrail `0.05`.
+- Simple meaning: we reward sequences that take over the pool, and we lightly penalize candidates that fade at the end.
 
 ### 5. The Shape Check
 - Job: add secondary-structure context as a supporting signal.
@@ -217,6 +218,7 @@ Edit `config/pipeline_config.yaml`:
 - `library`: sequence QC filters (length, GC, homopolymer, min total count)
 - `scoring`: pseudocount + growth weights
 - `scoring.vectorized_metrics`: set `true` to speed up pace/slope calculations with NumPy on large libraries (default `false`)
+- `scoring.growth_weights.terminal_guardrail`: optional name for the anti-fader weight; older configs may still use `pace_consistency`
 - `scoring.diversity_kmer_size`: k-mer size used for diversity rarity scoring (default `3`)
 - `filtering`: shortlist strictness (`top_n`, `min_log2_enrichment`, structure limits)
 - `output`: file format + output directory
@@ -238,7 +240,7 @@ Edit `config/pipeline_config.yaml`:
 ### The Race Begins
 - If scores look flat (many near 0.5), your trajectories may be too similar or too sparse.
 - That is not a code crash, but it is a signal to inspect round quality and `min_total_count`.
-- Tip: inspect `log2_enrichment`, `trend_slope`, and `pace_consistency` in exported results.
+- Tip: inspect `log2_enrichment`, `trend_slope`, `pace_consistency`, and `terminal_guardrail` in exported results.
 - If this stage is slow with very large candidate sets, try `scoring.vectorized_metrics: true`.
 
 ### Security Check

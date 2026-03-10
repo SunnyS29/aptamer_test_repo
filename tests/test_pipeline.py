@@ -166,7 +166,7 @@ class TestEnrichmentScoring:
         assert score_map["APT_1"].features["log2_enrichment"] > 0
         assert score_map["APT_2"].features["log2_enrichment"] < 0
 
-    def test_growth_scoring_prefers_steady_pace_when_weighted(self):
+    def test_growth_scoring_reports_steady_pace_as_better_diagnostic(self):
         candidates = [
             AptamerCandidate(
                 id="APT_STEADY",
@@ -201,7 +201,45 @@ class TestEnrichmentScoring:
         scores = score_binding(candidates, structures=[], target_features=None, config=config)
         score_map = {s.aptamer_id: s for s in scores}
         assert score_map["APT_STEADY"].features["pace_consistency"] > score_map["APT_SPIKY"].features["pace_consistency"]
-        assert score_map["APT_STEADY"].score > score_map["APT_SPIKY"].score
+        assert score_map["APT_STEADY"].score == pytest.approx(score_map["APT_SPIKY"].score)
+
+    def test_growth_scoring_penalizes_terminal_fade(self):
+        candidates = [
+            AptamerCandidate(
+                id="APT_LATE_WINNER",
+                sequence="ACGTACGTACGT",
+                length=12,
+                gc=0.5,
+                round_counts={"round_1": 1, "round_2": 1, "round_3": 30, "round_4": 120},
+                round_cpm={"round_1": 10.0, "round_2": 10.0, "round_3": 300.0, "round_4": 1200.0},
+                round_order=["round_1", "round_2", "round_3", "round_4"],
+            ),
+            AptamerCandidate(
+                id="APT_FADER",
+                sequence="TGCATGCATGCA",
+                length=12,
+                gc=0.5,
+                round_counts={"round_1": 1, "round_2": 1, "round_3": 200, "round_4": 80},
+                round_cpm={"round_1": 10.0, "round_2": 10.0, "round_3": 2000.0, "round_4": 800.0},
+                round_order=["round_1", "round_2", "round_3", "round_4"],
+            ),
+        ]
+        config = {
+            "scoring": {
+                "pseudocount": 1.0,
+                "growth_weights": {
+                    "fold_change": 0.80,
+                    "trend": 0.15,
+                    "pace_consistency": 0.05,
+                },
+            }
+        }
+
+        scores = score_binding(candidates, config=config)
+        score_map = {s.aptamer_id: s for s in scores}
+        assert score_map["APT_LATE_WINNER"].features["terminal_guardrail"] == pytest.approx(1.0)
+        assert score_map["APT_FADER"].features["terminal_guardrail"] < 1.0
+        assert score_map["APT_LATE_WINNER"].score > score_map["APT_FADER"].score
 
     def test_vectorized_flag_falls_back_when_numpy_unavailable(self, monkeypatch):
         candidates = [

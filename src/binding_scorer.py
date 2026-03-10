@@ -26,6 +26,8 @@ class BindingScore:
             "log2_enrichment": round(self.features.get("log2_enrichment", 0.0), 4),
             "trend_slope": round(self.features.get("trend_slope", 0.0), 4),
             "pace_consistency": round(self.features.get("pace_consistency", 0.0), 4),
+            "terminal_guardrail": round(self.features.get("terminal_guardrail", 0.0), 4),
+            "terminal_delta_log2": round(self.features.get("terminal_delta_log2", 0.0), 4),
             "final_round_cpm": round(self.features.get("final_round_cpm", 0.0), 4),
         }
 
@@ -109,6 +111,30 @@ def _pace_consistency(log_series: list[float]) -> float:
     return monotonicity * linearity
 
 
+def _terminal_guardrail(log_series: list[float]) -> tuple[float, float]:
+    """Return a fade guardrail based only on the final round-to-round step.
+
+    This is intentionally narrow: late bloomers should not be penalized for
+    non-linear growth, but candidates that fade in the final round should lose
+    rank support.
+    """
+    n = len(log_series)
+    if n < 2:
+        return 0.5, 0.0
+
+    final_delta = log_series[-1] - log_series[-2]
+    if final_delta >= 0.0:
+        return 1.0, final_delta
+
+    value_range = max(log_series) - min(log_series)
+    scale = value_range if value_range > 0 else abs(final_delta)
+    if scale <= 0:
+        return 0.0, final_delta
+
+    guardrail = max(0.0, 1.0 - (abs(final_delta) / scale))
+    return guardrail, final_delta
+
+
 def _load_numpy():
     """Import NumPy lazily so environments without stable BLAS can still run."""
     try:
@@ -171,6 +197,15 @@ def _candidate_growth_metrics_vectorized(candidates: list, rounds: list[str],
         )
         pace_consistency = monotonicity * linearity
 
+    final_delta = log_cpm[:, -1] - log_cpm[:, -2]
+    value_range = log_cpm.max(axis=1) - log_cpm.min(axis=1)
+    scale = np.where(value_range > 0.0, value_range, np.maximum(np.abs(final_delta), 1e-12))
+    terminal_guardrail = np.where(
+        final_delta >= 0.0,
+        1.0,
+        np.clip(1.0 - (np.abs(final_delta) / scale), 0.0, 1.0),
+    )
+
     final_round_cpm = cpm_matrix[:, -1]
 
     return [
@@ -178,6 +213,8 @@ def _candidate_growth_metrics_vectorized(candidates: list, rounds: list[str],
             "log2_enrichment": float(log2_enrichment[i]),
             "trend_slope": float(trend_slope[i]),
             "pace_consistency": float(pace_consistency[i]),
+            "terminal_guardrail": float(terminal_guardrail[i]),
+            "terminal_delta_log2": float(final_delta[i]),
             "final_round_cpm": float(final_round_cpm[i]),
         }
         for i in range(n_candidates)
@@ -204,12 +241,15 @@ def _candidate_growth_metrics(candidate, pseudocount: float) -> dict:
     log2_enrichment = log_cpm[-1] - log_cpm[0]
     trend_slope = _linear_slope(log_cpm)
     pace_consistency = _pace_consistency(log_cpm)
+    terminal_guardrail, terminal_delta = _terminal_guardrail(log_cpm)
     final_round_cpm = cpm_series[-1]
 
     return {
         "log2_enrichment": log2_enrichment,
         "trend_slope": trend_slope,
         "pace_consistency": pace_consistency,
+        "terminal_guardrail": terminal_guardrail,
+        "terminal_delta_log2": terminal_delta,
         "final_round_cpm": final_round_cpm,
     }
 
@@ -239,20 +279,22 @@ def score_binding(
     pseudocount = float(scoring_config.get("pseudocount", 1.0))
     vectorized_metrics = bool(scoring_config.get("vectorized_metrics", False))
     growth_weights = scoring_config.get("growth_weights", {})
-    w_fold = float(growth_weights.get("fold_change", 0.60))
-    w_trend = float(growth_weights.get("trend", 0.20))
-    w_pace = float(growth_weights.get("pace_consistency", 0.20))
-    weight_sum = w_fold + w_trend + w_pace
+    w_fold = float(growth_weights.get("fold_change", 0.80))
+    w_trend = float(growth_weights.get("trend", 0.15))
+    w_guardrail = float(
+        growth_weights.get("terminal_guardrail", growth_weights.get("pace_consistency", 0.05))
+    )
+    weight_sum = w_fold + w_trend + w_guardrail
     if weight_sum <= 0:
         raise ValueError("Growth score weights must sum to a positive value.")
     w_fold /= weight_sum
     w_trend /= weight_sum
-    w_pace /= weight_sum
+    w_guardrail /= weight_sum
 
     logger.info(
         "Scoring %d candidates by SELEX enrichment trajectories "
-        "(pseudocount=%.3f, fold_weight=%.2f, trend_weight=%.2f, pace_weight=%.2f, vectorized=%s).",
-        len(candidates), pseudocount, w_fold, w_trend, w_pace, vectorized_metrics
+        "(pseudocount=%.3f, fold_weight=%.2f, trend_weight=%.2f, guardrail_weight=%.2f, vectorized=%s).",
+        len(candidates), pseudocount, w_fold, w_trend, w_guardrail, vectorized_metrics
     )
 
     reference_rounds = candidates[0].round_order
@@ -282,19 +324,20 @@ def score_binding(
 
     fold_values = [m["log2_enrichment"] for m in metrics]
     trend_values = [m["trend_slope"] for m in metrics]
-    pace_values = [m["pace_consistency"] for m in metrics]
+    guardrail_values = [m["terminal_guardrail"] for m in metrics]
 
     fold_scaled = _min_max_scale(fold_values)
     trend_scaled = _min_max_scale(trend_values)
-    pace_scaled = _min_max_scale(pace_values)
 
     results = []
     for idx, candidate in enumerate(candidates):
-        growth_score = (
+        base_score = (
             w_fold * fold_scaled[idx]
             + w_trend * trend_scaled[idx]
-            + w_pace * pace_scaled[idx]
+            + w_guardrail * guardrail_values[idx]
         )
+        terminal_guardrail = guardrail_values[idx]
+        growth_score = base_score * terminal_guardrail if terminal_guardrail < 1.0 else base_score
         feature_payload = dict(metrics[idx])
         feature_payload["rounds"] = reference_rounds
         results.append(BindingScore(
