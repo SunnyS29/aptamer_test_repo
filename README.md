@@ -283,10 +283,11 @@ Use this when you want a quick health check on whether SELEX rounds are convergi
 python -m src.stopping_diagnostic --config config/pipeline_config.yaml
 ```
 
-It reports four universal markers:
+It reports five universal markers:
 - Leaderboard stability between the last two rounds
 - Top-candidate slope trajectory (acceleration/deceleration)
 - Pool dominance coverage (top 1 / 10 / 100)
+- Library health in the final round (reads, unique sequences, redundancy ratio)
 - Pace consistency across top-ranked candidates
 
 Recommendation output:

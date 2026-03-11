@@ -479,3 +479,50 @@ class TestStoppingDiagnostic:
         assert summary.top1_coverage_raw_pct == 90.0
         assert detail["top10_final_round"][0]["sequence"] == "WINNER"
         assert detail["top10_final_round"][0]["aptamer_id"] is None
+
+    def test_evaluate_stopping_point_uses_library_health_convergence_rule(self):
+        counts_rows = []
+        for idx in range(1, 11):
+            counts_rows.append(
+                {
+                    "sequence": f"SEQ_{idx}",
+                    "round_1": 100,
+                    "round_2": 200,
+                }
+            )
+        for idx in range(11, 1011):
+            counts_rows.append(
+                {
+                    "sequence": f"SEQ_{idx}",
+                    "round_1": 10,
+                    "round_2": 10,
+                }
+            )
+
+        ranked_rows = [
+            {
+                "rank": str(idx),
+                "aptamer_id": f"APT_{idx}",
+                "sequence": f"SEQ_{idx}",
+                "trend_slope": "1.0",
+                "pace_consistency": "0.2",
+            }
+            for idx in range(1, 11)
+        ]
+        round_totals = {
+            "round_1": sum(row["round_1"] for row in counts_rows),
+            "round_2": sum(row["round_2"] for row in counts_rows),
+        }
+
+        summary, _ = evaluate_stopping_point(
+            counts_rows=counts_rows,
+            ranked_rows=ranked_rows,
+            rounds=["round_1", "round_2"],
+            round_totals=round_totals,
+            top_n_for_pace=10,
+        )
+
+        assert summary.leaderboard_overlap_pct == 100.0
+        assert summary.final_round_unique_sequences == 1010
+        assert summary.final_round_redundancy_ratio > 5.0
+        assert summary.recommendation == "B"

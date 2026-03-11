@@ -16,6 +16,9 @@ from statistics import mean, median, pstdev
 
 from src.utils import load_config
 
+FINAL_UNIQUE_SEQUENCE_THRESHOLD = 10_000_000
+REDUNDANCY_CONFIDENCE_THRESHOLD = 5.0
+
 
 @dataclass
 class MarkerSummary:
@@ -32,6 +35,9 @@ class MarkerSummary:
     top1_coverage_ranked_pool_pct: float
     top10_coverage_ranked_pool_pct: float
     top100_coverage_ranked_pool_pct: float
+    final_round_total_reads: int
+    final_round_unique_sequences: int
+    final_round_redundancy_ratio: float
     pace_mean_top100: float
     pace_median_top100: float
     pace_cv_top100: float
@@ -162,6 +168,16 @@ def _coverage_metrics(
     }
 
 
+def _library_health_metrics(rows: list[dict], final_round: str, raw_total: int) -> dict[str, float]:
+    unique_sequences = sum(1 for row in rows if row[final_round] > 0)
+    redundancy_ratio = _safe_div(raw_total, unique_sequences)
+    return {
+        "final_round_total_reads": raw_total,
+        "final_round_unique_sequences": unique_sequences,
+        "final_round_redundancy_ratio": redundancy_ratio,
+    }
+
+
 def _pace_metrics(top_ranked: list[dict]) -> tuple[float, float, float, int]:
     paces = [float(r["pace_consistency"]) for r in top_ranked]
     if not paces:
@@ -212,6 +228,8 @@ def _recommendation(
     overlap_pct: float,
     cov_top1_raw: float,
     cov_top10_raw: float,
+    final_unique_sequences: int,
+    redundancy_ratio: float,
     pace_mean: float,
     pace_cv: float,
     mean_accel: float,
@@ -221,6 +239,19 @@ def _recommendation(
             "C",
             "Final-round dominance is very high, which is consistent with over-selection risk.",
             "over_selected",
+        )
+
+    if overlap_pct >= 80.0 and final_unique_sequences < FINAL_UNIQUE_SEQUENCE_THRESHOLD:
+        if redundancy_ratio >= REDUNDANCY_CONFIDENCE_THRESHOLD:
+            return (
+                "B",
+                "Leaderboard stability is high and final-round redundancy suggests the same winners are being observed repeatedly.",
+                "converged",
+            )
+        return (
+            "B",
+            "Leaderboard stability is high and final-round unique sequence count has dropped into a more confidence-friendly range.",
+            "converged",
         )
 
     converged = (
@@ -280,6 +311,9 @@ def evaluate_stopping_point(
     )
 
     cov = _coverage_metrics(counts_rows, final_round, round_totals[final_round])
+    library_health = _library_health_metrics(
+        counts_rows, final_round, round_totals[final_round]
+    )
 
     top_pace = ranked_rows[: min(top_n_for_pace, len(ranked_rows))]
     pace_mean, pace_median, pace_cv, pace_ge_07 = _pace_metrics(top_pace)
@@ -294,6 +328,8 @@ def evaluate_stopping_point(
         overlap_pct=overlap_pct,
         cov_top1_raw=cov["top1_raw_pct"],
         cov_top10_raw=cov["top10_raw_pct"],
+        final_unique_sequences=int(library_health["final_round_unique_sequences"]),
+        redundancy_ratio=float(library_health["final_round_redundancy_ratio"]),
         pace_mean=pace_mean,
         pace_cv=pace_cv,
         mean_accel=mean_accel,
@@ -323,6 +359,9 @@ def evaluate_stopping_point(
         top1_coverage_ranked_pool_pct=round(cov["top1_ranked_pool_pct"], 2),
         top10_coverage_ranked_pool_pct=round(cov["top10_ranked_pool_pct"], 2),
         top100_coverage_ranked_pool_pct=round(cov["top100_ranked_pool_pct"], 2),
+        final_round_total_reads=int(library_health["final_round_total_reads"]),
+        final_round_unique_sequences=int(library_health["final_round_unique_sequences"]),
+        final_round_redundancy_ratio=round(library_health["final_round_redundancy_ratio"], 4),
         pace_mean_top100=round(pace_mean, 4),
         pace_median_top100=round(pace_median, 4),
         pace_cv_top100=round(pace_cv, 4),
@@ -413,6 +452,12 @@ def main() -> None:
         f"top1={s.top1_coverage_raw_pct:.2f}%, "
         f"top10={s.top10_coverage_raw_pct:.2f}%, "
         f"top100={s.top100_coverage_raw_pct:.2f}%"
+    )
+    print(
+        "Library health (final round): "
+        f"reads={s.final_round_total_reads}, "
+        f"unique_sequences={s.final_round_unique_sequences}, "
+        f"redundancy_ratio={s.final_round_redundancy_ratio:.4f}"
     )
     print(
         "Pace consistency (top100): "
