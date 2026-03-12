@@ -1,11 +1,9 @@
 """Turn one sequencing file per round into one count table.
 
-This helper is the bridge between raw round files and the main pipeline.
-Its job is simple:
-1. open each FASTA/FASTQ file,
-2. pull out the sequence we care about,
-3. count how often each sequence appears,
-4. write one table the rest of the pipeline can compare across rounds.
+This file is the handoff between raw sequencing output and the rest of the
+pipeline. We read one file per round, decide what sequence to keep from each
+read, count how often each sequence appears, and then write one table that the
+main pipeline can compare across rounds.
 """
 
 from __future__ import annotations
@@ -35,7 +33,7 @@ class RoundSummary:
 
 @dataclass
 class _RoundCounts:
-    """Keep one round's counts and skip totals together while we process it."""
+    """Keep the running numbers for one round in one place."""
 
     label: str
     file_path: str
@@ -80,7 +78,8 @@ def _detect_file_format(path: Path) -> str:
 def _iter_fasta_sequences(path: Path) -> Iterable[str]:
     """Read sequences from a FASTA file.
 
-    FASTA entries can span multiple lines, so we join them before yielding.
+    FASTA entries can span multiple lines, so we stitch those lines back
+    together before yielding the sequence.
     """
     seq_parts: list[str] = []
 
@@ -105,7 +104,8 @@ def _iter_fastq_sequences(path: Path) -> Iterable[str]:
 
     FASTQ stores each read in blocks of four lines:
     header, sequence, plus-line, quality.
-    We only need the sequence line for counting.
+    We only need the sequence line for counting, but we still sanity-check the
+    record so a broken FASTQ file fails loudly.
     """
     with _open_text(path) as handle:
         line_number = 0
@@ -130,7 +130,7 @@ def _iter_fastq_sequences(path: Path) -> Iterable[str]:
 
 
 def _iter_sequences(path: Path) -> Iterable[str]:
-    """Pick the correct reader based on the file extension."""
+    """Send the file to the right reader based on its extension."""
     file_format = _detect_file_format(path)
     if file_format == "fasta":
         yield from _iter_fasta_sequences(path)
@@ -139,12 +139,12 @@ def _iter_sequences(path: Path) -> Iterable[str]:
 
 
 def _normalize_sequence(seq: str) -> str:
-    """Clean a sequence so small formatting differences do not split counts."""
+    """Clean a sequence so the same read is counted the same way every time."""
     return re.sub(r"\s+", "", seq).upper().replace("U", "T")
 
 
 def _reverse_complement(seq: str) -> str:
-    """Return the reverse complement for anchor matching when reads are flipped."""
+    """Return the reverse complement in case the read came in backwards."""
     return seq.translate(str.maketrans("ACGTN", "TGCAN"))[::-1]
 
 
@@ -154,7 +154,7 @@ def _extract_between_anchors(
     right_anchor: str | None,
     allow_reverse_complement: bool,
 ) -> str | None:
-    """Return the insert sequence we want to count for one read.
+    """Return the sequence we actually want to count for one read.
 
     If anchors are provided, we keep only the sequence between them.
     If no anchors are provided, we count the whole normalized read.
@@ -186,7 +186,7 @@ def _extract_between_anchors(
 
 
 def _infer_round_number(path: Path) -> int | None:
-    """Try to pull a round number from common file-name patterns."""
+    """Try to guess the round number from a file name."""
     name = _basename_without_suffixes(path)
     patterns = [
         r"(?:^|[_\-])(?:round|rnd|r)[_\-]?(\d+)(?:$|[_\-])",
@@ -204,9 +204,9 @@ def _resolve_round_labels(
 ) -> tuple[list[Path], list[str]]:
     """Decide the order and names of rounds.
 
-    We prefer explicit labels from the user. If they are missing, we try to
-    infer round numbers from file names. If that fails, we fall back to
-    alphabetical order so the tool still behaves predictably.
+    We use the user's labels if they gave them. Otherwise we try to guess round
+    numbers from the file names. If that still does not work, we fall back to
+    alphabetical order so the run is still predictable.
     """
     if round_labels is not None:
         if len(round_labels) != len(round_files):
@@ -232,7 +232,7 @@ def _resolve_round_labels(
 
 
 def _validate_round_inputs(round_files: list[Path]) -> None:
-    """Fail early on missing files or too few rounds."""
+    """Check the obvious input problems before we start doing any work."""
     if len(round_files) < 2:
         raise ValueError("Provide at least two round files so round comparison is meaningful.")
 
@@ -244,7 +244,7 @@ def _validate_round_inputs(round_files: list[Path]) -> None:
 def _normalized_anchors(
     left_anchor: str | None, right_anchor: str | None
 ) -> tuple[str | None, str | None]:
-    """Normalize anchor text once so we do not repeat that work per read."""
+    """Normalize anchor text once up front instead of for every read."""
     normalized_left = _normalize_sequence(left_anchor) if left_anchor is not None else None
     normalized_right = _normalize_sequence(right_anchor) if right_anchor is not None else None
     return normalized_left, normalized_right
@@ -257,7 +257,7 @@ def _count_round_sequences(
     right_anchor: str | None,
     allow_reverse_complement: bool,
 ) -> _RoundCounts:
-    """Read one round file and count the inserts we want to keep."""
+    """Read one round file and count the sequences that survive our rules."""
     counter: Counter[str] = Counter()
     skipped_empty = 0
     skipped_unmatched = 0
@@ -291,7 +291,7 @@ def _count_round_sequences(
 
 
 def _build_round_summaries(round_counts: list[_RoundCounts]) -> list[RoundSummary]:
-    """Convert internal per-round counters into the simpler export summary."""
+    """Turn the internal bookkeeping into the simpler summary we report back."""
     return [
         RoundSummary(
             round_label=round_count.label,
@@ -311,7 +311,7 @@ def _sorted_sequences_for_export(
     """Sort sequences so the most useful rows appear first in the output table.
 
     We rank by final-round count first, then total count across all rounds.
-    That makes the exported file easier to inspect by eye.
+    That way the top of the file is usually the part we care about most.
     """
     all_sequences: set[str] = set()
     for counter in counts_by_round.values():
@@ -337,7 +337,7 @@ def _write_counts_table(
     labels: list[str],
     sorted_sequences: list[str],
 ) -> None:
-    """Write the wide count table used by the rest of the pipeline."""
+    """Write the main wide count table that the pipeline expects."""
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     with output_csv.open("w", newline="") as handle:
         writer = csv.writer(handle)
@@ -347,7 +347,7 @@ def _write_counts_table(
 
 
 def _write_summary_table(summary_tsv: Path, summaries: list[RoundSummary]) -> None:
-    """Write a small per-round report for quick troubleshooting."""
+    """Write a small per-round report that makes troubleshooting easier."""
     summary_tsv.parent.mkdir(parents=True, exist_ok=True)
     with summary_tsv.open("w", newline="") as handle:
         writer = csv.writer(handle, delimiter="\t")
@@ -386,8 +386,8 @@ def convert_round_files(
     """Convert round files into one sequence-by-round count table.
 
     This is the main entry point used by both the CLI and the interactive
-    launcher. The helpers above keep each part small so it is easier to follow:
-    validate inputs, count each round, write the matrix, then write a summary.
+    launcher. The flow is intentionally plain:
+    check the inputs, count each round, write the table, then write the summary.
     """
     _validate_round_inputs(round_files)
     ordered_files, labels = _resolve_round_labels(round_files, round_labels)
@@ -423,7 +423,7 @@ def convert_fasta_rounds(
     right_anchor: str | None = None,
     allow_reverse_complement: bool = True,
 ) -> list[RoundSummary]:
-    """Backward-compatible wrapper kept for older imports and tests."""
+    """Keep the older function name working for existing imports and tests."""
     return convert_round_files(
         round_files=fasta_files,
         output_csv=output_csv,
