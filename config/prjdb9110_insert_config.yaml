@@ -19,7 +19,6 @@ selex:
 
 structure:
   temperature: 37.0
-  mfe_threshold: -5.0
 
 scoring:
   pseudocount: 1.0
@@ -30,13 +29,11 @@ scoring:
     trend: 0.15
     terminal_guardrail: 0.05
   weights:
-    enrichment_growth: 0.70
-    structural_stability: 0.20
+    enrichment_growth: 0.90
     sequence_diversity: 0.10
 
 filtering:
   top_n: 100
-  min_complexity: 1
   min_log2_enrichment: 0.0
 
 output:

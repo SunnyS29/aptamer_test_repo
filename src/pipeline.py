@@ -60,11 +60,11 @@ def generate_plots(ranked_candidates: list, output_dir: Path) -> None:
     axes[0, 0].set_title("Composite Score Distribution")
     axes[0, 0].set_xlabel("Composite Score")
 
-    # 2. Binding vs Stability scatter
-    sns.scatterplot(data=df, x="stability_score", y="binding_score",
+    # 2. Binding vs Diversity scatter
+    sns.scatterplot(data=df, x="diversity_score", y="binding_score",
                     hue="has_g_quadruplex", ax=axes[0, 1], alpha=0.7)
-    axes[0, 1].set_title("Binding vs Structural Stability")
-    axes[0, 1].set_xlabel("Stability Score")
+    axes[0, 1].set_title("Binding vs Sequence Diversity")
+    axes[0, 1].set_xlabel("Diversity Score")
     axes[0, 1].set_ylabel("Binding Score")
 
     # 3. MFE distribution
@@ -74,9 +74,9 @@ def generate_plots(ranked_candidates: list, output_dir: Path) -> None:
 
     # 4. Score breakdown for top 10
     top10 = df.head(10)
-    score_cols = ["binding_score", "stability_score", "diversity_score"]
+    score_cols = ["binding_score", "diversity_score"]
     top10[score_cols].plot(kind="bar", stacked=True, ax=axes[1, 1],
-                           color=["steelblue", "coral", "seagreen"])
+                           color=["steelblue", "seagreen"])
     axes[1, 1].set_title("Score Breakdown — Top 10 Candidates")
     axes[1, 1].set_xlabel("Candidate")
     axes[1, 1].set_xticklabels(top10["aptamer_id"], rotation=45, ha="right")
@@ -134,7 +134,7 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
 
     needs_target = stage in ("target", "all")
     needs_library = stage in ("library", "structure", "scoring", "filtering", "all")
-    needs_structure = stage in ("structure", "filtering", "all")
+    needs_structure = stage == "structure"
     needs_scoring = stage in ("scoring", "filtering", "all")
     needs_filtering = stage in ("filtering", "all")
 
@@ -162,7 +162,7 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
         if stage == "library":
             return results
 
-    # Structure features are optional support signals used during The Winning Bunch.
+    # Structure prediction is now an optional annotation-only stage.
     if needs_structure:
         if "candidates" not in results:
             logger.error(
@@ -202,7 +202,7 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
 
     # Station 5: The Winning Bunch filtering + shortlist ranking.
     if needs_filtering:
-        required = ["candidates", "structures", "binding_scores"]
+        required = ["candidates", "binding_scores"]
         if not all(k in results for k in required):
             logger.error(
                 "Previous stages must run before filtering. "
@@ -214,7 +214,7 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
         logger.info("STAGE 5: Filtering & Ranking")
         logger.info("=" * 60)
         ranked = filter_and_rank(
-            results["candidates"], results["structures"],
+            results["candidates"], results.get("structures", []),
             results["binding_scores"], config
         )
         results["ranked"] = ranked

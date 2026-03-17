@@ -18,8 +18,7 @@ selex:
   round_prefix: "round_"
 
 structure:
-  temperature: 37.0          # Folding temperature in Celsius
-  mfe_threshold: -5.0        # Minimum free energy cutoff (kcal/mol)
+  temperature: 37.0          # Folding temperature in Celsius for optional annotations
 
 scoring:
   pseudocount: 1.0
@@ -30,13 +29,11 @@ scoring:
     trend: 0.15
     terminal_guardrail: 0.05
   weights:
-    enrichment_growth: 0.70
-    structural_stability: 0.20
+    enrichment_growth: 0.90
     sequence_diversity: 0.10
 
 filtering:
   top_n: 50                  # Number of top candidates to return
-  min_complexity: 1          # Minimum number of structural motifs
   min_log2_enrichment: 0.0   # Optional growth floor for candidates
 
 output:

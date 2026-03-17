@@ -1,68 +1,70 @@
-# Aptamer Playground Race:
+# Aptamer Pipeline
 ## An Empirical HT-SELEX Enrichment & Analysis Pipeline
 
-This project helps us move from raw HT-SELEX count tables to a ranked shortlist of aptamer candidates.
-The key idea is simple: we reward sequences that truly gain ground across rounds, not sequences that only look big in one file.
-Everything in this README is written so that anyone can interact with the tool and be aware of the processes behind generating the output.
+This pipeline moves from raw HT-SELEX count tables to a ranked shortlist of aptamer candidates.
+The key idea is simple: sequences are rewarded for truly gaining ground across rounds, not for looking big in one snapshot.
+Everything in this README is written so that anyone can interact with the tool and understand the processes behind the output.
 
 ## What This Pipeline Is (and Is Not)
 
 - **It is** an empirical analysis pipeline that reads real sequence counts from SELEX rounds.
 - **It is not** a random-sequence generator.
-- **It is designed** to make our decisions traceable: we can explain why each sequence was kept, filtered, or ranked.
+- **It is designed** to make decisions traceable: every sequence that is kept, filtered, or ranked can be explained.
+- **It is not** a reliable aptamer structure predictor. Rough structure annotations can be attached, but they are not used to rank winners.
+- **It does not** replace wet-lab validation. The shortlist is meant to narrow the field, not prove binding on its own.
 
 ## The 5 Stations
 
 ### 1. The Scanner (Data Ingestion)
-- We read a counts table and detect sequence + round columns.
-- We support both wide format (`round_1`, `round_2`, ...) and long format (`round`, `count`).
-- We merge duplicate sequence rows and keep clean DNA-style sequence strings.
+- Reads a counts table and detects sequence + round columns.
+- Supports both wide format (`round_1`, `round_2`, ...) and long format (`round`, `count`).
+- Merges duplicate sequence rows and keeps clean DNA-style sequence strings.
 
-### 2. The Starting Line (CPM Normalization)
-- We compute each round's total reads.
-- We convert raw counts to CPM (`count / round_total * 1,000,000`) so rounds with different depths are comparable.
-- This is what lets us interpret "growth" as a biological trend instead of a sequencing-depth artifact.
+### 2. The Starting Line (CPM Normalisation)
+- Computes each round's total reads.
+- Converts raw counts to CPM (`count / round_total * 1,000,000`) so rounds with different depths are comparable.
+- This is what allows "growth" to be interpreted as a biological trend rather than a sequencing-depth artifact.
 
 ### 3. The Race Begins (Enrichment Scoring)
-- For each sequence, we look at how CPM changes across rounds.
-- We use three signals together: first-to-last log2 enrichment, overall trend slope, and a light terminal guardrail.
+- For each sequence, looks at how CPM changes across rounds.
+- Uses three signals together: first-to-last log2 enrichment, overall trend slope, and a light terminal guardrail.
 - Log2 enrichment and slope do the main ranking work.
-- The terminal guardrail is there to catch sequences that fade in the last round, not to punish step-function winners that take off late.
+- The terminal guardrail catches sequences that fade in the last round, without penalising step-function winners that take off late.
 
 ### 4. Security Check (Target Verification)
-- We fetch target information from PDB/UniProt (or read FASTA).
-- If target retrieval fails, we hard-stop the run.
-- We do this to protect us from silent junk outputs based on missing target context.
+- Fetches target information from PDB/UniProt (or reads FASTA).
+- If target retrieval fails, the run hard-stops.
+- This protects against silent junk outputs based on missing target context.
 
 ### 5. The Winning Bunch (Filtering + Ranking)
-- We remove weak candidates using enrichment and structure thresholds.
-- We compute a composite score where enrichment is the primary driver, and structure/diversity help break ties.
+- Removes weak candidates using enrichment thresholds.
+- Computes a composite score where enrichment is the primary driver, and diversity is a light tie-breaker.
 - Diversity is computed with a pooled k-mer rarity score (near-linear runtime), not all-vs-all pairwise distances.
 - The output shortlist is saved to CSV/JSON for downstream review.
 
 ## How The Race Works
 
 This is the plain-language version of what the pipeline is doing under the hood.
-Think of every sequence as a runner in a stadium. We are not just asking who looked good once. We are asking who keeps moving toward the front as the race gets harder.
+Think of every sequence as a runner in a stadium. The question is not who looked good once — it is who keeps moving toward the front as the race gets harder.
 
 ### 1. The Trimmer
-- Job: if raw FASTQ reads still contain constant primer regions, we cut those away and keep only the variable insert.
-- Why it matters: otherwise we risk ranking sequencing constructs instead of real aptamer candidates.
-- Math behind it: pattern matching, not a statistical model. We look for a left anchor and a right anchor and keep the sequence between them. We can also check the reverse complement if reads come in the opposite orientation.
+- Job: if raw FASTQ reads still contain constant primer regions, cut those away and keep only the variable insert.
+- Why it matters: otherwise the risk is ranking sequencing constructs instead of real aptamer candidates.
+- Math behind it: pattern matching, not a statistical model. Looks for a left anchor and a right anchor and keeps the sequence between them. Can also check the reverse complement if reads come in the opposite orientation.
 
 ### 2. The Counter
 - Job: count how many times each sequence appears in each round.
-- Why it matters: this gives us the raw race table.
+- Why it matters: this gives the raw race table.
 - Math behind it: empirical frequency counting. No prediction yet, just observed abundance.
 
 ### 3. The Equalizer
 - Job: convert raw counts into CPM, or counts per million.
 - Formula: `CPM = count / total_round_reads * 1,000,000`
 - Why it matters: rounds often have different sequencing depth, so raw counts alone are not fair.
-- Simple meaning: CPM tells us how much of the pool a sequence owns in that round.
+- Simple meaning: CPM tells you how much of the pool a sequence owns in that round.
 
 ### 4. The Growth Judge
-- Job: score how strongly a sequence takes over the pool, while still checking that it does not fade at the finish.
+- Job: score how strongly a sequence takes over the pool, while checking that it does not fade at the finish.
 - Exact methods used:
 - `log2` enrichment: measures doubling-like growth from first round to last round.
 - Least-squares slope: fits a straight trend line across rounds to measure overall upward movement.
@@ -71,23 +73,22 @@ Think of every sequence as a runner in a stadium. We are not just asking who loo
 - Terminal guardrail: checks whether the last round goes down versus the round before it.
 - Min-max scaling: rescales the growth features to `0-1` so they can be combined fairly.
 - Weighted sum: fold change `0.80`, slope `0.15`, terminal guardrail `0.05`.
-- Simple meaning: we reward sequences that take over the pool, and we lightly penalize candidates that fade at the end.
+- Simple meaning: sequences that take over the pool are rewarded, and candidates that fade at the end are lightly penalised.
 
 ### 5. The Shape Check
-- Job: add secondary-structure context as a supporting signal.
+- Job: attach optional structure annotations for review.
 - Exact methods used:
 - ViennaRNA minimum free energy, if installed.
 - Dot-bracket motif counting for stems, loops, and bulges.
 - G-quadruplex pattern detection with a sequence regex.
-- Important note: if ViennaRNA is not installed, structure now stays neutral instead of pretending the fallback is real biology.
+- Important note: these fields are annotations only. They are not used to rank candidates because aptamer structure prediction is not reliable enough to drive winner selection.
 
 ### 6. The Winning Bunch
 - Job: build the final shortlist.
 - Exact methods used:
-- Stability score: min-max normalized MFE.
 - Diversity score: k-mer rarity across the candidate pool.
-- Weighted sum: enrichment growth `0.70`, structural stability `0.20`, sequence diversity `0.10`.
-- Simple meaning: growth is the main decision-maker, while structure and diversity help break ties.
+- Weighted sum: enrichment growth `0.90`, sequence diversity `0.10`.
+- Simple meaning: growth is the main decision-maker, while diversity helps break ties.
 
 ### 7. The Finish-Line Referee
 - Job: decide whether the experiment looks mature enough to stop.
@@ -108,7 +109,7 @@ cd aptamer_test_repo
 pip install -r requirements.txt
 ```
 
-Optional for stronger structure modeling:
+Optional for rough structure annotation only:
 ```bash
 pip install ViennaRNA
 ```
@@ -117,6 +118,17 @@ pip install ViennaRNA
 ```bash
 python -m src.pipeline --config config/pipeline_config.yaml
 ```
+
+If you want the tool to prompt for files instead of typing paths by hand:
+```bash
+python -m src.interactive_launcher
+```
+
+The launcher will:
+- ask whether you already have a counts table or raw round files
+- let you choose the target input
+- let you choose an output folder
+- save an `interactive_run_config.yaml` file so the run is still reproducible
 
 Run one station for debugging:
 ```bash
@@ -152,9 +164,9 @@ What this does:
 - Builds one table the pipeline can compare across rounds.
 
 Helpful tip:
-- If you do not pass `--round-labels`, we try to guess rounds from file names like `round_3`, `r3`, or `rnd3`.
+- If you do not pass `--round-labels`, round numbers are guessed from file names like `round_3`, `r3`, or `rnd3`.
 - If round numbers are not in file names, files are sorted alphabetically.
-- If your FASTQ reads still include constant primer regions, add `--left-anchor` and `--right-anchor` so we count only the variable insert.
+- If your FASTQ reads still include constant primer regions, add `--left-anchor` and `--right-anchor` to count only the variable insert.
 
 Example with anchor extraction:
 ```bash
@@ -197,7 +209,7 @@ What matters:
 - Counts must be whole numbers (no decimals).
 
 ### Option 3: Raw sequencing files (FASTQ/FASTA)
-Use this when you start from raw files from the sequencer.
+Use this when starting from raw files from the sequencer.
 
 - Supported: `.fastq`, `.fastq.gz`, `.fasta`, `.fasta.gz`
 - One file should represent one round.
@@ -220,25 +232,24 @@ Edit `config/pipeline_config.yaml`:
 - `scoring.vectorized_metrics`: set `true` to speed up pace/slope calculations with NumPy on large libraries (default `false`)
 - `scoring.growth_weights.terminal_guardrail`: optional name for the anti-fader weight; older configs may still use `pace_consistency`
 - `scoring.diversity_kmer_size`: k-mer size used for diversity rarity scoring (default `3`)
-- `filtering`: shortlist strictness (`top_n`, `min_log2_enrichment`, structure limits)
+- `filtering`: shortlist strictness (`top_n`, `min_log2_enrichment`)
 - `output`: file format + output directory
 
 ## Friendly Troubleshooting (By Section)
 
 ### The Scanner
-- If the pipeline says **"Could not find a sequence column"**, don't panic.
-- It usually means column headers are inconsistent.
+- If the pipeline says **"Could not find a sequence column"**, it usually means column headers are inconsistent.
 - Tip: rename the sequence column to `sequence` and rerun.
 - If conversion fails with **"Unsupported input format"**, check file suffixes.
 - Tip: rename files to `.fastq(.gz)` or `.fasta(.gz)` and rerun the converter.
 
 ### The Starting Line
-- If you see **"One or more rounds have zero total reads"**, normalization cannot proceed safely.
+- If you see **"One or more rounds have zero total reads"**, normalisation cannot proceed safely.
 - This means at least one round is effectively empty.
 - Tip: check that all round columns are mapped correctly and not accidentally blank.
 
 ### The Race Begins
-- If scores look flat (many near 0.5), your trajectories may be too similar or too sparse.
+- If scores look flat (many near 0.5), trajectories may be too similar or too sparse.
 - That is not a code crash, but it is a signal to inspect round quality and `min_total_count`.
 - Tip: inspect `log2_enrichment`, `trend_slope`, `pace_consistency`, and `terminal_guardrail` in exported results.
 - If this stage is slow with very large candidate sets, try `scoring.vectorized_metrics: true`.
@@ -246,15 +257,15 @@ Edit `config/pipeline_config.yaml`:
 ### Security Check
 - If you see **"Failed to fetch PDB target"** or **"No sequence found"**, the run is correctly blocking unsafe analysis.
 - Tip: check network access, ID spelling, or switch to a local FASTA target file.
-- We prefer stopping early here because silent fallback would corrupt later decisions.
+- The run stops early here because silent fallback would corrupt later decisions.
 
 ### The Winning Bunch
 - If you get **"No candidates passed filters"**, the filters are likely too strict for the current dataset.
-- Tip: loosen `min_log2_enrichment`, `mfe_threshold`, or `min_complexity` gradually and rerun.
-- Keep a record of threshold changes so we can justify shortlist criteria later.
+- Tip: loosen `min_log2_enrichment` or lower `library.min_total_count` gradually and rerun.
+- Keep a record of threshold changes so shortlist criteria can be justified later.
 - If you see **"scoring.diversity_kmer_size must be >= 1"**, set `scoring.diversity_kmer_size` to `3` and rerun.
 - If ranking still feels slow, raise `library.min_total_count` to reduce the candidate pool before Station 5.
-- If ViennaRNA is not installed, structure stays neutral instead of steering the ranking.
+- If ViennaRNA is not installed, nothing breaks. The optional structure annotations will simply not appear.
 
 ## Project Structure
 
@@ -265,7 +276,7 @@ src/
 ├── binding_scorer.py      # The Race Begins scoring
 ├── target_analyzer.py     # Security Check target validation
 ├── filter_rank.py         # The Winning Bunch filtering and ranking
-├── structure_predictor.py # Secondary structure features
+├── structure_predictor.py # Optional structure annotations
 └── utils.py               # Shared helpers
 ```
 
@@ -297,4 +308,4 @@ Recommendation output:
 
 ## License
 
-This project is released under the MIT License. See [LICENSE](/Users/sunny/Documents/aptamer-pipeline/LICENSE).
+This project is released under the MIT License. See [LICENSE](LICENSE).

@@ -1,13 +1,12 @@
 """Station 5: The Winning Bunch.
 
 This module creates the shortlist we hand to experimental follow-up.
-We use enrichment as the main signal, then add structure/diversity as tie-breakers.
+We use enrichment as the main signal, then add a light diversity tie-breaker.
+Structure fields are kept only as optional annotations.
 """
 
 import logging
 from dataclasses import dataclass
-
-from src.structure_predictor import VIENNA_AVAILABLE
 
 logger = logging.getLogger("aptamer_pipeline")
 
@@ -30,7 +29,6 @@ class RankedCandidate:
     pace_consistency: float
     terminal_guardrail: float
     final_round_cpm: float
-    stability_score: float
     diversity_score: float
     composite_score: float
 
@@ -51,20 +49,9 @@ class RankedCandidate:
             "pace_consistency": round(self.pace_consistency, 4),
             "terminal_guardrail": round(self.terminal_guardrail, 4),
             "final_round_cpm": round(self.final_round_cpm, 4),
-            "stability_score": round(self.stability_score, 4),
             "diversity_score": round(self.diversity_score, 4),
             "composite_score": round(self.composite_score, 4),
         }
-
-
-def compute_stability_score(mfe: float, mfe_values: list[float]) -> float:
-    """Normalize MFE to a 0-1 stability score (lower MFE = higher score)."""
-    min_mfe = min(mfe_values)
-    max_mfe = max(mfe_values)
-    if max_mfe == min_mfe:
-        return 0.5
-    # We invert because lower (more negative) MFE means more stable folding.
-    return (max_mfe - mfe) / (max_mfe - min_mfe)
 
 
 def compute_diversity_score(sequence: str, all_sequences: list[str]) -> float:
@@ -141,12 +128,9 @@ def filter_and_rank(candidates: list, structures: list,
     """
     filter_config = config.get("filtering", {})
     scoring_config = config.get("scoring", {})
-    structure_config = config.get("structure", {})
 
     top_n = filter_config.get("top_n", 50)
-    min_complexity = filter_config.get("min_complexity", 3)
     min_log2_enrichment = filter_config.get("min_log2_enrichment")
-    mfe_threshold = structure_config.get("mfe_threshold", -5.0)
 
     weights = scoring_config.get("weights", {})
     diversity_kmer_size = int(scoring_config.get("diversity_kmer_size", 3))
@@ -155,14 +139,12 @@ def filter_and_rank(candidates: list, structures: list,
             "scoring.diversity_kmer_size must be >= 1. "
             "Tip: use 3 for a balanced speed/specificity default."
         )
-    w_binding = weights.get("enrichment_growth", weights.get("binding_affinity", 0.70))
-    w_stability = weights.get("structural_stability", 0.20)
+    w_binding = weights.get("enrichment_growth", weights.get("binding_affinity", 0.90))
     w_diversity = weights.get("sequence_diversity", 0.10)
-    weight_sum = w_binding + w_stability + w_diversity
+    weight_sum = w_binding + w_diversity
     if weight_sum <= 0:
         raise ValueError("Scoring weights must sum to a positive value.")
     w_binding /= weight_sum
-    w_stability /= weight_sum
     w_diversity /= weight_sum
 
     # Build lookup maps
@@ -170,9 +152,6 @@ def filter_and_rank(candidates: list, structures: list,
     score_map = {s.aptamer_id: s for s in binding_scores}
     cand_map = {c.id: c for c in candidates}
 
-    # We normalize against the full candidate pool so component scores stay on
-    # comparable scales before composite weighting.
-    all_mfe = [s.mfe for s in structures]
     all_sequences = [c.sequence for c in candidates]
     diversity_scores = compute_diversity_scores(
         all_sequences, kmer_size=diversity_kmer_size
@@ -180,33 +159,14 @@ def filter_and_rank(candidates: list, structures: list,
     diversity_map = {
         candidate.id: diversity_scores[idx] for idx, candidate in enumerate(candidates)
     }
-    if not all_mfe:
-        logger.warning(
-            "No structure predictions available for ranking. "
-            "Tip: run the structure stage before The Winning Bunch."
-        )
-        return []
+    logger.info("Filtering candidates with enrichment-driven ranking.")
 
-    logger.info(f"Filtering candidates: mfe_threshold={mfe_threshold}, "
-                f"min_complexity={min_complexity}")
-    if not VIENNA_AVAILABLE:
-        logger.warning(
-            "ViennaRNA is unavailable, so structural filtering/scoring will stay neutral. "
-            "Tip: install ViennaRNA if you want structure to affect ranking."
-        )
-
-    # First pass: hard filters remove obvious non-winners before weighted ranking.
+    # First pass: only enrichment-based hard filters remain.
     filtered_ids = []
     for candidate in candidates:
-        struct = struct_map.get(candidate.id)
         score = score_map.get(candidate.id)
-        if struct is None or score is None:
+        if score is None:
             continue
-        if VIENNA_AVAILABLE:
-            if struct.mfe > mfe_threshold:
-                continue
-            if struct.motif_count < min_complexity:
-                continue
         if min_log2_enrichment is not None:
             seq_log2 = score.features.get("log2_enrichment", 0.0)
             if seq_log2 < float(min_log2_enrichment):
@@ -219,15 +179,12 @@ def filter_and_rank(candidates: list, structures: list,
     ranked = []
     for apt_id in filtered_ids:
         candidate = cand_map[apt_id]
-        struct = struct_map[apt_id]
+        struct = struct_map.get(apt_id)
         binding = score_map[apt_id]
-
-        stability = compute_stability_score(struct.mfe, all_mfe) if VIENNA_AVAILABLE else 0.5
         diversity = diversity_map.get(apt_id, 0.5)
 
         composite = (
             w_binding * binding.score +
-            w_stability * stability +
             w_diversity * diversity
         )
 
@@ -237,17 +194,16 @@ def filter_and_rank(candidates: list, structures: list,
             sequence=candidate.sequence,
             length=candidate.length,
             gc_content=candidate.gc,
-            mfe=struct.mfe,
-            structure=struct.structure,
-            motif_count=struct.motif_count,
-            has_g_quadruplex=struct.has_g_quadruplex,
+            mfe=struct.mfe if struct is not None else 0.0,
+            structure=struct.structure if struct is not None else "NA",
+            motif_count=struct.motif_count if struct is not None else 0,
+            has_g_quadruplex=struct.has_g_quadruplex if struct is not None else False,
             binding_score=binding.score,
             log2_enrichment=float(binding.features.get("log2_enrichment", 0.0)),
             trend_slope=float(binding.features.get("trend_slope", 0.0)),
             pace_consistency=float(binding.features.get("pace_consistency", 0.0)),
             terminal_guardrail=float(binding.features.get("terminal_guardrail", 0.0)),
             final_round_cpm=float(binding.features.get("final_round_cpm", 0.0)),
-            stability_score=stability,
             diversity_score=diversity,
             composite_score=composite,
         ))

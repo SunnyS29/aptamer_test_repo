@@ -10,7 +10,6 @@ from src.binding_scorer import BindingScore, score_binding
 from src.filter_rank import (
     compute_diversity_scores,
     compute_diversity_score,
-    compute_stability_score,
     filter_and_rank,
 )
 from src.pipeline import run_pipeline
@@ -291,11 +290,6 @@ class TestEnrichmentScoring:
 
 
 class TestFilterRank:
-    def test_stability_score_normalization(self):
-        mfe_values = [-10.0, -5.0, -1.0]
-        assert compute_stability_score(-10.0, mfe_values) == 1.0
-        assert compute_stability_score(-1.0, mfe_values) == 0.0
-
     def test_diversity_score_different(self):
         seqs = ["AAAAAAAAAA", "CCCCCCCCCC", "GGGGGGGGGG"]
         score = compute_diversity_score("AAAAAAAAAA", seqs)
@@ -311,30 +305,6 @@ class TestFilterRank:
             AptamerCandidate(id="APT_1", sequence="ACGTACGTACGT", length=12, gc=0.5),
             AptamerCandidate(id="APT_2", sequence="TGCATGCATGCA", length=12, gc=0.5),
         ]
-        structures = [
-            StructureResult(
-                aptamer_id="APT_1",
-                sequence="ACGTACGTACGT",
-                structure="(((....)))..",
-                mfe=-8.0,
-                n_stems=1,
-                n_loops=1,
-                n_bulges=0,
-                has_g_quadruplex=False,
-                motif_count=3,
-            ),
-            StructureResult(
-                aptamer_id="APT_2",
-                sequence="TGCATGCATGCA",
-                structure="(((....)))..",
-                mfe=-7.5,
-                n_stems=1,
-                n_loops=1,
-                n_bulges=0,
-                has_g_quadruplex=False,
-                motif_count=3,
-            ),
-        ]
         scores = [
             BindingScore(
                 aptamer_id="APT_1",
@@ -348,16 +318,15 @@ class TestFilterRank:
             ),
         ]
         config = {
-            "filtering": {"top_n": 10, "min_complexity": 3, "min_log2_enrichment": 0.0},
-            "structure": {"mfe_threshold": -5.0},
-            "scoring": {"weights": {"enrichment_growth": 0.7, "structural_stability": 0.2, "sequence_diversity": 0.1}},
+            "filtering": {"top_n": 10, "min_log2_enrichment": 0.0},
+            "scoring": {"weights": {"enrichment_growth": 0.9, "sequence_diversity": 0.1}},
         }
 
-        ranked = filter_and_rank(candidates, structures, scores, config)
+        ranked = filter_and_rank(candidates, [], scores, config)
         assert len(ranked) == 1
         assert ranked[0].aptamer_id == "APT_1"
 
-    def test_filter_rank_neutralizes_structure_without_vienna(self, monkeypatch):
+    def test_filter_rank_keeps_structure_as_annotation_only(self):
         candidates = [AptamerCandidate(id="APT_1", sequence="ACGTACGTACGT", length=12, gc=0.5)]
         structures = [
             StructureResult(
@@ -385,21 +354,46 @@ class TestFilterRank:
             )
         ]
         config = {
-            "filtering": {"top_n": 10, "min_complexity": 3, "min_log2_enrichment": 0.0},
-            "structure": {"mfe_threshold": -5.0},
+            "filtering": {"top_n": 10, "min_log2_enrichment": 0.0},
             "scoring": {
                 "weights": {
-                    "enrichment_growth": 0.7,
-                    "structural_stability": 0.2,
+                    "enrichment_growth": 0.9,
                     "sequence_diversity": 0.1,
                 }
             },
         }
 
-        monkeypatch.setattr("src.filter_rank.VIENNA_AVAILABLE", False)
         ranked = filter_and_rank(candidates, structures, scores, config)
         assert len(ranked) == 1
-        assert ranked[0].stability_score == 0.5
+        assert ranked[0].structure == "(((....))).."
+        assert ranked[0].mfe == 5.0
+
+    def test_filter_rank_uses_placeholder_structure_when_not_provided(self):
+        candidates = [AptamerCandidate(id="APT_1", sequence="ACGTACGTACGT", length=12, gc=0.5)]
+        scores = [
+            BindingScore(
+                aptamer_id="APT_1",
+                score=0.9,
+                features={
+                    "log2_enrichment": 2.0,
+                    "trend_slope": 1.0,
+                    "pace_consistency": 0.9,
+                    "terminal_guardrail": 1.0,
+                    "final_round_cpm": 1000.0,
+                },
+            )
+        ]
+        config = {
+            "filtering": {"top_n": 10, "min_log2_enrichment": 0.0},
+            "scoring": {"weights": {"enrichment_growth": 0.9, "sequence_diversity": 0.1}},
+        }
+
+        ranked = filter_and_rank(candidates, [], scores, config)
+        assert len(ranked) == 1
+        assert ranked[0].structure == "NA"
+        assert ranked[0].mfe == 0.0
+        assert ranked[0].motif_count == 0
+        assert ranked[0].has_g_quadruplex is False
 
 
 class TestStructurePredictor:
@@ -433,7 +427,7 @@ class TestPipelineStages:
                 "min_total_count": 1,
             },
             "selex": {"counts_file": str(counts_path), "round_prefix": "round_"},
-            "structure": {"temperature": 37.0, "mfe_threshold": -5.0},
+            "structure": {"temperature": 37.0},
             "scoring": {"pseudocount": 1.0},
             "output": {"directory": str(tmp_path / "out"), "generate_plots": False, "verbose": False},
         }
