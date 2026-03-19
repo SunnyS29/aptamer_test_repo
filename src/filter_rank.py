@@ -26,7 +26,6 @@ class RankedCandidate:
     binding_score: float
     log2_enrichment: float
     trend_slope: float
-    pace_consistency: float
     terminal_guardrail: float
     final_round_cpm: float
     diversity_score: float
@@ -46,7 +45,6 @@ class RankedCandidate:
             "binding_score": round(self.binding_score, 4),
             "log2_enrichment": round(self.log2_enrichment, 4),
             "trend_slope": round(self.trend_slope, 4),
-            "pace_consistency": round(self.pace_consistency, 4),
             "terminal_guardrail": round(self.terminal_guardrail, 4),
             "final_round_cpm": round(self.final_round_cpm, 4),
             "diversity_score": round(self.diversity_score, 4),
@@ -152,13 +150,6 @@ def filter_and_rank(candidates: list, structures: list,
     score_map = {s.aptamer_id: s for s in binding_scores}
     cand_map = {c.id: c for c in candidates}
 
-    all_sequences = [c.sequence for c in candidates]
-    diversity_scores = compute_diversity_scores(
-        all_sequences, kmer_size=diversity_kmer_size
-    )
-    diversity_map = {
-        candidate.id: diversity_scores[idx] for idx, candidate in enumerate(candidates)
-    }
     logger.info("Filtering candidates with enrichment-driven ranking.")
 
     # First pass: only enrichment-based hard filters remain.
@@ -174,6 +165,16 @@ def filter_and_rank(candidates: list, structures: list,
         filtered_ids.append(candidate.id)
 
     logger.info(f"After filtering: {len(filtered_ids)}/{len(candidates)} candidates remain")
+
+    # Diversity should reflect the shortlist candidates we are actually
+    # comparing, not the full background pool that already failed enrichment.
+    filtered_sequences = [cand_map[apt_id].sequence for apt_id in filtered_ids]
+    filtered_diversity_scores = compute_diversity_scores(
+        filtered_sequences, kmer_size=diversity_kmer_size
+    )
+    diversity_map = {
+        apt_id: filtered_diversity_scores[idx] for idx, apt_id in enumerate(filtered_ids)
+    }
 
     # Second pass: composite ranking among survivors.
     ranked = []
@@ -201,7 +202,6 @@ def filter_and_rank(candidates: list, structures: list,
             binding_score=binding.score,
             log2_enrichment=float(binding.features.get("log2_enrichment", 0.0)),
             trend_slope=float(binding.features.get("trend_slope", 0.0)),
-            pace_consistency=float(binding.features.get("pace_consistency", 0.0)),
             terminal_guardrail=float(binding.features.get("terminal_guardrail", 0.0)),
             final_round_cpm=float(binding.features.get("final_round_cpm", 0.0)),
             diversity_score=diversity,

@@ -159,7 +159,7 @@ class TestEnrichmentScoring:
         ]
         config = {"scoring": {"pseudocount": 1.0}}
 
-        scores = score_binding(candidates, structures=[], target_features=None, config=config)
+        scores = score_binding(candidates, config=config)
         score_map = {s.aptamer_id: s for s in scores}
         assert score_map["APT_1"].score > score_map["APT_2"].score
         assert score_map["APT_1"].features["log2_enrichment"] > 0
@@ -197,7 +197,7 @@ class TestEnrichmentScoring:
             }
         }
 
-        scores = score_binding(candidates, structures=[], target_features=None, config=config)
+        scores = score_binding(candidates, config=config)
         score_map = {s.aptamer_id: s for s in scores}
         assert score_map["APT_STEADY"].features["pace_consistency"] > score_map["APT_SPIKY"].features["pace_consistency"]
         assert score_map["APT_STEADY"].score == pytest.approx(score_map["APT_SPIKY"].score)
@@ -271,8 +271,8 @@ class TestEnrichmentScoring:
         cfg_vec = {"scoring": dict(cfg_common["scoring"], vectorized_metrics=True)}
         cfg_loop = {"scoring": dict(cfg_common["scoring"], vectorized_metrics=False)}
 
-        vec_scores = score_binding(candidates, structures=[], target_features=None, config=cfg_vec)
-        loop_scores = score_binding(candidates, structures=[], target_features=None, config=cfg_loop)
+        vec_scores = score_binding(candidates, config=cfg_vec)
+        loop_scores = score_binding(candidates, config=cfg_loop)
         vec_map = {s.aptamer_id: s for s in vec_scores}
         loop_map = {s.aptamer_id: s for s in loop_scores}
 
@@ -325,6 +325,7 @@ class TestFilterRank:
         ranked = filter_and_rank(candidates, [], scores, config)
         assert len(ranked) == 1
         assert ranked[0].aptamer_id == "APT_1"
+        assert ranked[0].diversity_score == 1.0
 
     def test_filter_rank_keeps_structure_as_annotation_only(self):
         candidates = [AptamerCandidate(id="APT_1", sequence="ACGTACGTACGT", length=12, gc=0.5)]
@@ -450,14 +451,12 @@ class TestStoppingDiagnostic:
                 "aptamer_id": "APT_A",
                 "sequence": "RANKED_A",
                 "trend_slope": "1.0",
-                "pace_consistency": "0.8",
             },
             {
                 "rank": "2",
                 "aptamer_id": "APT_B",
                 "sequence": "RANKED_B",
                 "trend_slope": "0.8",
-                "pace_consistency": "0.7",
             },
         ]
         round_totals = {"round_1": 60, "round_2": 1000}

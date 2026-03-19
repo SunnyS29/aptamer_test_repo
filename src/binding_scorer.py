@@ -254,17 +254,8 @@ def _candidate_growth_metrics(candidate, pseudocount: float) -> dict:
     }
 
 
-def score_binding(
-    candidates: list,
-    structures: Optional[list] = None,
-    target_features=None,
-    config: Optional[dict] = None,
-) -> list[BindingScore]:
-    """Score candidates using measured SELEX enrichment, not synthetic ML.
-
-    `structures` and `target_features` are accepted for backwards compatibility,
-    but enrichment scoring now depends only on the observed round trajectories.
-    """
+def score_binding(candidates: list, config: Optional[dict] = None) -> list[BindingScore]:
+    """Score candidates from observed round trajectories only."""
     if not candidates:
         logger.warning(
             "No candidates available for enrichment scoring. "

@@ -178,8 +178,57 @@ def _library_health_metrics(rows: list[dict], final_round: str, raw_total: int) 
     }
 
 
-def _pace_metrics(top_ranked: list[dict]) -> tuple[float, float, float, int]:
-    paces = [float(r["pace_consistency"]) for r in top_ranked]
+def _trajectory_pace(row: dict, by_sequence: dict[str, dict], rounds: list[str], totals: dict[str, int]) -> float:
+    sequence = row["sequence"]
+    counts = by_sequence.get(sequence)
+    if counts is None:
+        return 0.0
+
+    log_series = []
+    for round_name in rounds:
+        cpm = _safe_div(counts[round_name], totals[round_name]) * 1_000_000
+        log_series.append(math.log2(cpm + 1.0))
+
+    n = len(log_series)
+    if n < 2:
+        return 0.0
+    if n == 2:
+        return 0.5
+
+    deltas = [log_series[i + 1] - log_series[i] for i in range(n - 1)]
+    monotonicity = sum(1 for d in deltas if d >= 0.0) / len(deltas)
+
+    x_mean = (n - 1) / 2
+    y_mean = sum(log_series) / n
+    numerator = 0.0
+    denominator = 0.0
+    for i, y_val in enumerate(log_series):
+        dx = i - x_mean
+        numerator += dx * (y_val - y_mean)
+        denominator += dx * dx
+    slope = _safe_div(numerator, denominator)
+    intercept = y_mean - slope * x_mean
+
+    residuals_sq = []
+    for i, y_val in enumerate(log_series):
+        y_hat = intercept + slope * i
+        residuals_sq.append((y_val - y_hat) ** 2)
+    rmse = math.sqrt(sum(residuals_sq) / n)
+
+    value_range = max(log_series) - min(log_series)
+    linearity = 1.0 if value_range == 0 else max(0.0, 1.0 - (rmse / value_range))
+    return monotonicity * linearity
+
+
+def _pace_metrics(
+    top_ranked: list[dict], by_sequence: dict[str, dict], rounds: list[str], totals: dict[str, int]
+) -> tuple[float, float, float, int]:
+    paces = []
+    for row in top_ranked:
+        if "pace_consistency" in row and row["pace_consistency"] not in (None, ""):
+            paces.append(float(row["pace_consistency"]))
+        else:
+            paces.append(_trajectory_pace(row, by_sequence, rounds, totals))
     if not paces:
         return 0.0, 0.0, 0.0, 0
     pace_mean = mean(paces)
@@ -316,7 +365,9 @@ def evaluate_stopping_point(
     )
 
     top_pace = ranked_rows[: min(top_n_for_pace, len(ranked_rows))]
-    pace_mean, pace_median, pace_cv, pace_ge_07 = _pace_metrics(top_pace)
+    pace_mean, pace_median, pace_cv, pace_ge_07 = _pace_metrics(
+        top_pace, by_sequence, rounds, round_totals
+    )
 
     slope_direction = "mixed"
     if pos_accel == len(top3_ranked):

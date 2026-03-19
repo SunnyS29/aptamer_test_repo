@@ -251,7 +251,7 @@ Edit `config/pipeline_config.yaml`:
 ### The Race Begins
 - If scores look flat (many near 0.5), trajectories may be too similar or too sparse.
 - That is not a code crash, but it is a signal to inspect round quality and `min_total_count`.
-- Tip: inspect `log2_enrichment`, `trend_slope`, `pace_consistency`, and `terminal_guardrail` in exported results.
+- Tip: inspect `log2_enrichment`, `trend_slope`, and `terminal_guardrail` in exported results. `pace_consistency` is now kept for diagnostics rather than the main ranked output.
 - If this stage is slow with very large candidate sets, try `scoring.vectorized_metrics: true`.
 
 ### Security Check
