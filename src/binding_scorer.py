@@ -1,7 +1,7 @@
 """Station 3: The Race Begins.
 
 This module turns per-round CPM trajectories into an enrichment score that favors
-sequences which rise strongly and steadily over the course of selection.
+sequences which gain the most ground over the course of selection.
 """
 
 import logging
@@ -25,7 +25,6 @@ class BindingScore:
             "binding_score": round(self.score, 4),
             "log2_enrichment": round(self.features.get("log2_enrichment", 0.0), 4),
             "trend_slope": round(self.features.get("trend_slope", 0.0), 4),
-            "pace_consistency": round(self.features.get("pace_consistency", 0.0), 4),
             "terminal_guardrail": round(self.features.get("terminal_guardrail", 0.0), 4),
             "terminal_delta_log2": round(self.features.get("terminal_delta_log2", 0.0), 4),
             "final_round_cpm": round(self.features.get("final_round_cpm", 0.0), 4),
@@ -71,44 +70,6 @@ def _min_max_scale(values: list[float], default: float = 0.5) -> list[float]:
     if max_val == min_val:
         return [default for _ in values]
     return [(v - min_val) / (max_val - min_val) for v in values]
-
-
-def _pace_consistency(log_series: list[float]) -> float:
-    """Estimate how steadily a trajectory climbs round-to-round.
-
-    We combine two ideas:
-    1) Monotonicity: frequent downward dips lower confidence in steady winners.
-    2) Linearity: smooth trajectories score higher than spiky jumps.
-    """
-    n = len(log_series)
-    if n < 2:
-        return 0.0
-    if n == 2:
-        # With only two rounds we cannot assess smoothness; stay neutral.
-        return 0.5
-
-    deltas = [log_series[i + 1] - log_series[i] for i in range(n - 1)]
-    monotonicity = sum(1 for d in deltas if d >= 0.0) / len(deltas)
-
-    slope = _linear_slope(log_series)
-    x_mean = (n - 1) / 2
-    y_mean = sum(log_series) / n
-    intercept = y_mean - slope * x_mean
-
-    residuals_sq = []
-    for i, y_val in enumerate(log_series):
-        y_hat = intercept + slope * i
-        residuals_sq.append((y_val - y_hat) ** 2)
-    rmse = math.sqrt(sum(residuals_sq) / n)
-
-    value_range = max(log_series) - min(log_series)
-    if value_range == 0:
-        linearity = 1.0
-    else:
-        # Lower normalized residual means pace is closer to a steady climb.
-        linearity = max(0.0, 1.0 - (rmse / value_range))
-
-    return monotonicity * linearity
 
 
 def _terminal_guardrail(log_series: list[float]) -> tuple[float, float]:
@@ -181,21 +142,6 @@ def _candidate_growth_metrics_vectorized(candidates: list, rounds: list[str],
     if denom > 0:
         trend_slope = ((log_cpm - y_mean[:, None]) * dx[None, :]).sum(axis=1) / denom
 
-    if n_rounds == 2:
-        pace_consistency = np.full(n_candidates, 0.5, dtype=float)
-    else:
-        deltas = np.diff(log_cpm, axis=1)
-        monotonicity = (deltas >= 0.0).mean(axis=1)
-        intercept = y_mean - trend_slope * x_mean
-        y_hat = intercept[:, None] + trend_slope[:, None] * x[None, :]
-        rmse = np.sqrt(((log_cpm - y_hat) ** 2).mean(axis=1))
-        value_range = log_cpm.max(axis=1) - log_cpm.min(axis=1)
-        linearity = np.where(
-            value_range == 0.0,
-            1.0,
-            np.clip(1.0 - (rmse / value_range), 0.0, 1.0),
-        )
-        pace_consistency = monotonicity * linearity
 
     final_delta = log_cpm[:, -1] - log_cpm[:, -2]
     value_range = log_cpm.max(axis=1) - log_cpm.min(axis=1)
@@ -212,7 +158,6 @@ def _candidate_growth_metrics_vectorized(candidates: list, rounds: list[str],
         {
             "log2_enrichment": float(log2_enrichment[i]),
             "trend_slope": float(trend_slope[i]),
-            "pace_consistency": float(pace_consistency[i]),
             "terminal_guardrail": float(terminal_guardrail[i]),
             "terminal_delta_log2": float(final_delta[i]),
             "final_round_cpm": float(final_round_cpm[i]),
@@ -240,14 +185,12 @@ def _candidate_growth_metrics(candidate, pseudocount: float) -> dict:
     log_cpm = [math.log2(v + pseudocount) for v in cpm_series]
     log2_enrichment = log_cpm[-1] - log_cpm[0]
     trend_slope = _linear_slope(log_cpm)
-    pace_consistency = _pace_consistency(log_cpm)
     terminal_guardrail, terminal_delta = _terminal_guardrail(log_cpm)
     final_round_cpm = cpm_series[-1]
 
     return {
         "log2_enrichment": log2_enrichment,
         "trend_slope": trend_slope,
-        "pace_consistency": pace_consistency,
         "terminal_guardrail": terminal_guardrail,
         "terminal_delta_log2": terminal_delta,
         "final_round_cpm": final_round_cpm,
@@ -270,22 +213,18 @@ def score_binding(candidates: list, config: Optional[dict] = None) -> list[Bindi
     pseudocount = float(scoring_config.get("pseudocount", 1.0))
     vectorized_metrics = bool(scoring_config.get("vectorized_metrics", False))
     growth_weights = scoring_config.get("growth_weights", {})
-    w_fold = float(growth_weights.get("fold_change", 0.80))
+    w_fold = float(growth_weights.get("fold_change", 0.85))
     w_trend = float(growth_weights.get("trend", 0.15))
-    w_guardrail = float(
-        growth_weights.get("terminal_guardrail", growth_weights.get("pace_consistency", 0.05))
-    )
-    weight_sum = w_fold + w_trend + w_guardrail
+    weight_sum = w_fold + w_trend
     if weight_sum <= 0:
         raise ValueError("Growth score weights must sum to a positive value.")
     w_fold /= weight_sum
     w_trend /= weight_sum
-    w_guardrail /= weight_sum
 
     logger.info(
         "Scoring %d candidates by SELEX enrichment trajectories "
-        "(pseudocount=%.3f, fold_weight=%.2f, trend_weight=%.2f, guardrail_weight=%.2f, vectorized=%s).",
-        len(candidates), pseudocount, w_fold, w_trend, w_guardrail, vectorized_metrics
+        "(pseudocount=%.3f, fold_weight=%.2f, trend_weight=%.2f, vectorized=%s).",
+        len(candidates), pseudocount, w_fold, w_trend, vectorized_metrics
     )
 
     reference_rounds = candidates[0].round_order
@@ -322,13 +261,9 @@ def score_binding(candidates: list, config: Optional[dict] = None) -> list[Bindi
 
     results = []
     for idx, candidate in enumerate(candidates):
-        base_score = (
-            w_fold * fold_scaled[idx]
-            + w_trend * trend_scaled[idx]
-            + w_guardrail * guardrail_values[idx]
-        )
+        base_score = w_fold * fold_scaled[idx] + w_trend * trend_scaled[idx]
         terminal_guardrail = guardrail_values[idx]
-        growth_score = base_score * terminal_guardrail if terminal_guardrail < 1.0 else base_score
+        growth_score = base_score * terminal_guardrail ** 2
         feature_payload = dict(metrics[idx])
         feature_payload["rounds"] = reference_rounds
         results.append(BindingScore(

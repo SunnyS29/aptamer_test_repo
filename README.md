@@ -27,7 +27,7 @@ Everything in this README is written so that anyone can interact with the tool a
 
 ### 3. The Race Begins (Enrichment Scoring)
 - For each sequence, looks at how CPM changes across rounds.
-- Uses three signals together: first-to-last log2 enrichment, overall trend slope, and a light terminal guardrail.
+- Uses three signals together: first-to-last log2 enrichment, overall trend slope, and a strong but graded terminal guardrail.
 - Log2 enrichment and slope do the main ranking work.
 - The terminal guardrail catches sequences that fade in the last round, without penalising step-function winners that take off late.
 
@@ -38,8 +38,8 @@ Everything in this README is written so that anyone can interact with the tool a
 
 ### 5. The Winning Bunch (Filtering + Ranking)
 - Removes weak candidates using enrichment thresholds.
-- Computes a composite score where enrichment is the primary driver, and diversity is a light tie-breaker.
-- Diversity is computed with a pooled k-mer rarity score (near-linear runtime), not all-vs-all pairwise distances.
+- Ranks candidates by their enrichment score after applying the configured enrichment threshold.
+- Computes pooled k-mer rarity across the final shortlist as an annotation; diversity cannot change rank.
 - The output shortlist is saved to CSV/JSON for downstream review.
 
 ## How The Race Works
@@ -68,12 +68,10 @@ Think of every sequence as a runner in a stadium. The question is not who looked
 - Exact methods used:
 - `log2` enrichment: measures doubling-like growth from first round to last round.
 - Least-squares slope: fits a straight trend line across rounds to measure overall upward movement.
-- Monotonicity: checks how often a sequence avoids going backwards from one round to the next.
-- RMSE: measures how far the real trajectory wiggles away from the fitted trend line.
 - Terminal guardrail: checks whether the last round goes down versus the round before it.
 - Min-max scaling: rescales the growth features to `0-1` so they can be combined fairly.
-- Weighted sum: fold change `0.80`, slope `0.15`, terminal guardrail `0.05`.
-- Simple meaning: sequences that take over the pool are rewarded, and candidates that fade at the end are lightly penalised.
+- Weighted core: fold change `0.85` and slope `0.15`; the result is then multiplied once by the squared terminal guardrail for a strong, graded fade penalty.
+- Simple meaning: sequences that take over the pool are rewarded, and candidates that fade at the end receive a strong but proportional penalty.
 
 ### 5. The Shape Check
 - Job: attach optional structure annotations for review.
@@ -86,9 +84,10 @@ Think of every sequence as a runner in a stadium. The question is not who looked
 ### 6. The Winning Bunch
 - Job: build the final shortlist.
 - Exact methods used:
-- Diversity score: k-mer rarity across the candidate pool.
-- Weighted sum: enrichment growth `0.90`, sequence diversity `0.10`.
-- Simple meaning: growth is the main decision-maker, while diversity helps break ties.
+- Minimum log2 enrichment: removes candidates below the configured evidence floor.
+- Enrichment-score ordering: stronger measured trajectories rank first.
+- Diversity score: reports k-mer rarity within the shortlist as an annotation only.
+- Simple meaning: enrichment picks the winners; diversity helps us inspect whether the shortlist contains different sequence families.
 
 ### 7. The Finish-Line Referee
 - Job: decide whether the experiment looks mature enough to stop.
@@ -97,7 +96,7 @@ Think of every sequence as a runner in a stadium. The question is not who looked
 - Jaccard index for set similarity of the two leaderboards.
 - Coverage percentages for the top 1, top 10, and top 100 sequences.
 - Mean acceleration of the top 3 trajectories.
-- Mean, median, and coefficient of variation of the pace score.
+- Mean, median, and coefficient of variation of a pace score based on monotonicity and RMSE.
 - A composite data quality score and a rule-based recommendation.
 
 ## Quick Start
@@ -229,8 +228,8 @@ Edit `config/pipeline_config.yaml`:
 - `selex.counts_file`: the counts table path
 - `library`: sequence QC filters (length, GC, homopolymer, min total count)
 - `scoring`: pseudocount + growth weights
-- `scoring.vectorized_metrics`: set `true` to speed up pace/slope calculations with NumPy on large libraries (default `false`)
-- `scoring.growth_weights.terminal_guardrail`: optional name for the anti-fader weight; older configs may still use `pace_consistency`
+- `scoring.vectorized_metrics`: set `true` to speed up enrichment and slope calculations with NumPy on large libraries (default `false`)
+- The squared terminal guardrail is applied once after the weighted enrichment score; it is not an additional weighted component
 - `scoring.diversity_kmer_size`: k-mer size used for diversity rarity scoring (default `3`)
 - `filtering`: shortlist strictness (`top_n`, `min_log2_enrichment`)
 - `output`: file format + output directory
@@ -251,7 +250,7 @@ Edit `config/pipeline_config.yaml`:
 ### The Race Begins
 - If scores look flat (many near 0.5), trajectories may be too similar or too sparse.
 - That is not a code crash, but it is a signal to inspect round quality and `min_total_count`.
-- Tip: inspect `log2_enrichment`, `trend_slope`, and `terminal_guardrail` in exported results. `pace_consistency` is now kept for diagnostics rather than the main ranked output.
+- Tip: inspect `log2_enrichment`, `trend_slope`, and `terminal_guardrail` in exported results. The separate stopping diagnostic calculates pace from the original round counts when needed.
 - If this stage is slow with very large candidate sets, try `scoring.vectorized_metrics: true`.
 
 ### Security Check

@@ -165,43 +165,6 @@ class TestEnrichmentScoring:
         assert score_map["APT_1"].features["log2_enrichment"] > 0
         assert score_map["APT_2"].features["log2_enrichment"] < 0
 
-    def test_growth_scoring_reports_steady_pace_as_better_diagnostic(self):
-        candidates = [
-            AptamerCandidate(
-                id="APT_STEADY",
-                sequence="ACGTACGTACGT",
-                length=12,
-                gc=0.5,
-                round_counts={"round_1": 10, "round_2": 20, "round_3": 40, "round_4": 80},
-                round_cpm={"round_1": 100.0, "round_2": 200.0, "round_3": 400.0, "round_4": 800.0},
-                round_order=["round_1", "round_2", "round_3", "round_4"],
-            ),
-            AptamerCandidate(
-                id="APT_SPIKY",
-                sequence="TGCATGCATGCA",
-                length=12,
-                gc=0.5,
-                round_counts={"round_1": 10, "round_2": 10, "round_3": 10, "round_4": 80},
-                round_cpm={"round_1": 100.0, "round_2": 100.0, "round_3": 100.0, "round_4": 800.0},
-                round_order=["round_1", "round_2", "round_3", "round_4"],
-            ),
-        ]
-        config = {
-            "scoring": {
-                "pseudocount": 1.0,
-                "growth_weights": {
-                    "fold_change": 0.0,
-                    "trend": 0.0,
-                    "pace_consistency": 1.0,
-                },
-            }
-        }
-
-        scores = score_binding(candidates, config=config)
-        score_map = {s.aptamer_id: s for s in scores}
-        assert score_map["APT_STEADY"].features["pace_consistency"] > score_map["APT_SPIKY"].features["pace_consistency"]
-        assert score_map["APT_STEADY"].score == pytest.approx(score_map["APT_SPIKY"].score)
-
     def test_growth_scoring_penalizes_terminal_fade(self):
         candidates = [
             AptamerCandidate(
@@ -227,9 +190,8 @@ class TestEnrichmentScoring:
             "scoring": {
                 "pseudocount": 1.0,
                 "growth_weights": {
-                    "fold_change": 0.80,
+                    "fold_change": 0.85,
                     "trend": 0.15,
-                    "pace_consistency": 0.05,
                 },
             }
         }
@@ -239,6 +201,47 @@ class TestEnrichmentScoring:
         assert score_map["APT_LATE_WINNER"].features["terminal_guardrail"] == pytest.approx(1.0)
         assert score_map["APT_FADER"].features["terminal_guardrail"] < 1.0
         assert score_map["APT_LATE_WINNER"].score > score_map["APT_FADER"].score
+
+    def test_terminal_guardrail_is_applied_once(self, monkeypatch):
+        candidates = [
+            AptamerCandidate(
+                id="APT_LOW",
+                sequence="ACGTACGTACGT",
+                length=12,
+                gc=0.5,
+                round_order=["round_1", "round_2"],
+            ),
+            AptamerCandidate(
+                id="APT_FADER",
+                sequence="TGCATGCATGCA",
+                length=12,
+                gc=0.5,
+                round_order=["round_1", "round_2"],
+            ),
+        ]
+
+        def fixed_metrics(candidate, pseudocount):
+            if candidate.id == "APT_LOW":
+                return {
+                    "log2_enrichment": 0.0,
+                    "trend_slope": 0.0,
+                    "terminal_guardrail": 1.0,
+                    "terminal_delta_log2": 0.0,
+                    "final_round_cpm": 1.0,
+                }
+            return {
+                "log2_enrichment": 10.0,
+                "trend_slope": 10.0,
+                "terminal_guardrail": 0.5,
+                "terminal_delta_log2": -1.0,
+                "final_round_cpm": 1000.0,
+            }
+
+        monkeypatch.setattr("src.binding_scorer._candidate_growth_metrics", fixed_metrics)
+        scores = score_binding(candidates, config={"scoring": {}})
+        score_map = {score.aptamer_id: score for score in scores}
+
+        assert score_map["APT_FADER"].score == pytest.approx(0.25)
 
     def test_vectorized_flag_falls_back_when_numpy_unavailable(self, monkeypatch):
         candidates = [
@@ -264,7 +267,7 @@ class TestEnrichmentScoring:
         cfg_common = {
             "scoring": {
                 "pseudocount": 1.0,
-                "growth_weights": {"fold_change": 0.6, "trend": 0.2, "pace_consistency": 0.2},
+                "growth_weights": {"fold_change": 0.85, "trend": 0.15},
             }
         }
         monkeypatch.setattr("src.binding_scorer._load_numpy", lambda: None)
@@ -283,9 +286,6 @@ class TestEnrichmentScoring:
             )
             assert vec_map[apt_id].features["trend_slope"] == pytest.approx(
                 loop_map[apt_id].features["trend_slope"], abs=1e-9
-            )
-            assert vec_map[apt_id].features["pace_consistency"] == pytest.approx(
-                loop_map[apt_id].features["pace_consistency"], abs=1e-9
             )
 
 
@@ -319,7 +319,6 @@ class TestFilterRank:
         ]
         config = {
             "filtering": {"top_n": 10, "min_log2_enrichment": 0.0},
-            "scoring": {"weights": {"enrichment_growth": 0.9, "sequence_diversity": 0.1}},
         }
 
         ranked = filter_and_rank(candidates, [], scores, config)
@@ -349,19 +348,12 @@ class TestFilterRank:
                 features={
                     "log2_enrichment": 2.0,
                     "trend_slope": 1.0,
-                    "pace_consistency": 0.9,
                     "final_round_cpm": 1000.0,
                 },
             )
         ]
         config = {
             "filtering": {"top_n": 10, "min_log2_enrichment": 0.0},
-            "scoring": {
-                "weights": {
-                    "enrichment_growth": 0.9,
-                    "sequence_diversity": 0.1,
-                }
-            },
         }
 
         ranked = filter_and_rank(candidates, structures, scores, config)
@@ -378,7 +370,6 @@ class TestFilterRank:
                 features={
                     "log2_enrichment": 2.0,
                     "trend_slope": 1.0,
-                    "pace_consistency": 0.9,
                     "terminal_guardrail": 1.0,
                     "final_round_cpm": 1000.0,
                 },
@@ -386,7 +377,6 @@ class TestFilterRank:
         ]
         config = {
             "filtering": {"top_n": 10, "min_log2_enrichment": 0.0},
-            "scoring": {"weights": {"enrichment_growth": 0.9, "sequence_diversity": 0.1}},
         }
 
         ranked = filter_and_rank(candidates, [], scores, config)

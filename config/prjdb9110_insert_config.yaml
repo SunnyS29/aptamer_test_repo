@@ -25,12 +25,8 @@ scoring:
   vectorized_metrics: false
   diversity_kmer_size: 3
   growth_weights:
-    fold_change: 0.80
+    fold_change: 0.85
     trend: 0.15
-    terminal_guardrail: 0.05
-  weights:
-    enrichment_growth: 0.90
-    sequence_diversity: 0.10
 
 filtering:
   top_n: 100

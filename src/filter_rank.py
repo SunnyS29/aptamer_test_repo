@@ -1,8 +1,7 @@
 """Station 5: The Winning Bunch.
 
 This module creates the shortlist we hand to experimental follow-up.
-We use enrichment as the main signal, then add a light diversity tie-breaker.
-Structure fields are kept only as optional annotations.
+Enrichment determines rank. Diversity and structure are optional annotations.
 """
 
 import logging
@@ -13,7 +12,7 @@ logger = logging.getLogger("aptamer_pipeline")
 
 @dataclass
 class RankedCandidate:
-    """A ranked aptamer candidate with composite score."""
+    """A ranked aptamer candidate with enrichment and review annotations."""
     rank: int
     aptamer_id: str
     sequence: str
@@ -113,7 +112,7 @@ def compute_diversity_scores(all_sequences: list[str], kmer_size: int = 3) -> li
 
 def filter_and_rank(candidates: list, structures: list,
                     binding_scores: list, config: dict) -> list[RankedCandidate]:
-    """Filter and rank aptamer candidates by composite score.
+    """Filter and rank aptamer candidates by measured enrichment score.
 
     Args:
         candidates: List of AptamerCandidate objects.
@@ -122,7 +121,7 @@ def filter_and_rank(candidates: list, structures: list,
         config: Full pipeline config dict.
 
     Returns:
-        List of RankedCandidate objects, sorted by composite score descending.
+        RankedCandidate objects sorted by enrichment score descending.
     """
     filter_config = config.get("filtering", {})
     scoring_config = config.get("scoring", {})
@@ -130,21 +129,12 @@ def filter_and_rank(candidates: list, structures: list,
     top_n = filter_config.get("top_n", 50)
     min_log2_enrichment = filter_config.get("min_log2_enrichment")
 
-    weights = scoring_config.get("weights", {})
     diversity_kmer_size = int(scoring_config.get("diversity_kmer_size", 3))
     if diversity_kmer_size < 1:
         raise ValueError(
             "scoring.diversity_kmer_size must be >= 1. "
             "Tip: use 3 for a balanced speed/specificity default."
         )
-    w_binding = weights.get("enrichment_growth", weights.get("binding_affinity", 0.90))
-    w_diversity = weights.get("sequence_diversity", 0.10)
-    weight_sum = w_binding + w_diversity
-    if weight_sum <= 0:
-        raise ValueError("Scoring weights must sum to a positive value.")
-    w_binding /= weight_sum
-    w_diversity /= weight_sum
-
     # Build lookup maps
     struct_map = {s.aptamer_id: s for s in structures}
     score_map = {s.aptamer_id: s for s in binding_scores}
@@ -166,28 +156,28 @@ def filter_and_rank(candidates: list, structures: list,
 
     logger.info(f"After filtering: {len(filtered_ids)}/{len(candidates)} candidates remain")
 
-    # Diversity should reflect the shortlist candidates we are actually
-    # comparing, not the full background pool that already failed enrichment.
-    filtered_sequences = [cand_map[apt_id].sequence for apt_id in filtered_ids]
-    filtered_diversity_scores = compute_diversity_scores(
-        filtered_sequences, kmer_size=diversity_kmer_size
+    # Rank on measured enrichment first. Diversity is calculated afterwards so
+    # it can describe the shortlist without displacing a stronger trajectory.
+    shortlisted_ids = sorted(
+        filtered_ids, key=lambda apt_id: score_map[apt_id].score, reverse=True
+    )[:top_n]
+    shortlisted_sequences = [cand_map[apt_id].sequence for apt_id in shortlisted_ids]
+    shortlist_diversity_scores = compute_diversity_scores(
+        shortlisted_sequences, kmer_size=diversity_kmer_size
     )
     diversity_map = {
-        apt_id: filtered_diversity_scores[idx] for idx, apt_id in enumerate(filtered_ids)
+        apt_id: shortlist_diversity_scores[idx] for idx, apt_id in enumerate(shortlisted_ids)
     }
 
-    # Second pass: composite ranking among survivors.
+    # Build the export records in the enrichment order chosen above.
     ranked = []
-    for apt_id in filtered_ids:
+    for apt_id in shortlisted_ids:
         candidate = cand_map[apt_id]
         struct = struct_map.get(apt_id)
         binding = score_map[apt_id]
         diversity = diversity_map.get(apt_id, 0.5)
 
-        composite = (
-            w_binding * binding.score +
-            w_diversity * diversity
-        )
+        composite = binding.score
 
         ranked.append(RankedCandidate(
             rank=0,
@@ -208,14 +198,11 @@ def filter_and_rank(candidates: list, structures: list,
             composite_score=composite,
         ))
 
-    # Sort by composite score descending
-    ranked.sort(key=lambda r: r.composite_score, reverse=True)
-
-    # Assign ranks and take top N
+    # Assign ranks after all annotation fields have been attached.
     for i, r in enumerate(ranked):
         r.rank = i + 1
 
-    top_candidates = ranked[:top_n]
+    top_candidates = ranked
 
     logger.info(f"Top {len(top_candidates)} candidates selected. "
                 f"Score range: {top_candidates[-1].composite_score:.3f} - "
