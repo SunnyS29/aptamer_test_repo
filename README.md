@@ -2,14 +2,14 @@
 ## An Empirical HT-SELEX Enrichment & Analysis Pipeline
 
 This pipeline moves from raw HT-SELEX count tables to a ranked shortlist of aptamer candidates.
-The key idea is simple: sequences are rewarded for truly gaining ground across rounds, not for looking big in one snapshot.
-Everything in this README is written so that anyone can interact with the tool and understand the processes behind the output.
+The pipeline ranks sequences by changes in normalized abundance across rounds rather than by abundance in a single round.
+This README explains each processing step and the checks behind the final output.
 
 ## What This Pipeline Is (and Is Not)
 
 - **It is** an empirical analysis pipeline that reads real sequence counts from SELEX rounds.
 - **It is not** a random-sequence generator.
-- **It is designed** to make decisions traceable: every sequence that is kept, filtered, or ranked can be explained.
+- **It records its decisions:** we can trace why each sequence was kept, filtered, or ranked.
 - **It is not** a reliable aptamer structure predictor. Rough structure annotations can be attached, but they are not used to rank winners.
 - **It does not** replace wet-lab validation. The shortlist is meant to narrow the field, not prove binding on its own.
 
@@ -34,7 +34,7 @@ Everything in this README is written so that anyone can interact with the tool a
 ### 4. Security Check (Target Verification)
 - Fetches target information from PDB/UniProt (or reads FASTA).
 - If target retrieval fails, the run hard-stops.
-- This protects against silent junk outputs based on missing target context.
+- This prevents later stages from running without verified target data.
 
 ### 5. The Winning Bunch (Filtering + Ranking)
 - Removes weak candidates using enrichment thresholds.
@@ -44,8 +44,8 @@ Everything in this README is written so that anyone can interact with the tool a
 
 ## How The Race Works
 
-This is the plain-language version of what the pipeline is doing under the hood.
-Think of every sequence as a runner in a stadium. The question is not who looked good once — it is who keeps moving toward the front as the race gets harder.
+The following sections explain what each calculation does and why we use it.
+Think of every sequence as a runner in a stadium. The question is not who looked good once. It is who keeps moving toward the front as the race gets harder.
 
 ### 1. The Trimmer
 - Job: if raw FASTQ reads still contain constant primer regions, cut those away and keep only the variable insert.
@@ -71,7 +71,7 @@ Think of every sequence as a runner in a stadium. The question is not who looked
 - Terminal guardrail: checks whether the last round goes down versus the round before it.
 - Min-max scaling: rescales the growth features to `0-1` so they can be combined fairly.
 - Weighted core: fold change `0.85` and slope `0.15`; the result is then multiplied once by the squared terminal guardrail for a strong, graded fade penalty.
-- Simple meaning: sequences that take over the pool are rewarded, and candidates that fade at the end receive a strong but proportional penalty.
+- A larger final-round decline causes a larger reduction in the candidate's score.
 
 ### 5. The Shape Check
 - Job: attach optional structure annotations for review.
@@ -264,7 +264,7 @@ Edit `config/pipeline_config.yaml`:
 - Keep a record of threshold changes so shortlist criteria can be justified later.
 - If you see **"scoring.diversity_kmer_size must be >= 1"**, set `scoring.diversity_kmer_size` to `3` and rerun.
 - If ranking still feels slow, raise `library.min_total_count` to reduce the candidate pool before Station 5.
-- If ViennaRNA is not installed, nothing breaks. The optional structure annotations will simply not appear.
+- If ViennaRNA is not installed, the pipeline continues without optional structure annotations.
 
 ## Project Structure
 
@@ -322,11 +322,11 @@ The report is saved as `validation_report.json` inside the configured output dir
 
 What it tells us:
 
-- **Bootstrap confidence:** we resample each round at the same read depth and rerun the real enrichment score. This tells us how often each original leader stays in the top `K`.
+- **Bootstrap confidence:** we resample each round at the same read depth and rerun the enrichment score. The result shows how often each original leader stays in the top `K`.
 - **95% rank interval:** this shows how far a candidate moves across resamples. A narrow interval is steadier, and the challenger list shows which candidates sometimes take its place.
 - **Walk-forward overlap:** we hide one later round, rank candidates using only the earlier rounds, and then compare our prediction with the hidden leaders.
 - **Spearman correlation:** this compares the earlier score order with the hidden CPM order. `1` means strong agreement, `0` means little rank relationship, and a negative value means the order tends to reverse.
-- **Training eligibility:** this tells us whether hidden leaders had enough earlier evidence to enter the race. Sparse early splits are labelled `not_evaluable` and left out of averages instead of being given a misleading zero.
+- **Training eligibility:** this reports whether hidden leaders had enough earlier evidence to enter the race. Sparse early splits are labelled `not_evaluable` and left out of averages instead of being given a misleading zero.
 
 Where this check stops:
 
@@ -338,7 +338,7 @@ Where this check stops:
 
 Helpful tips:
 
-- If you see **"Walk-forward validation requires at least three rounds"**, do not panic. We need one hidden round in addition to the two rounds required for scoring.
+- **"Walk-forward validation requires at least three rounds"** means we need two rounds for scoring and one later round for validation.
 - If NumPy is missing, run `pip install -r requirements.txt`.
 - If no candidates pass the enrichment floor, check `filtering.min_log2_enrichment` before adding more computation.
 
