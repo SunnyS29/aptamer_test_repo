@@ -276,7 +276,7 @@ def _prepare_wide_format(
     return table, rounds
 
 
-def _load_selex_counts(config: dict) -> tuple[list[dict[str, int]], list[str]]:
+def load_selex_counts(config: dict) -> tuple[list[dict[str, int]], list[str]]:
     """Load and validate SELEX counts before scoring.
 
     We require at least two rounds and non-zero round totals, otherwise enrichment
@@ -341,15 +341,18 @@ def _load_selex_counts(config: dict) -> tuple[list[dict[str, int]], list[str]]:
     return table, rounds
 
 
-def generate_library(config: dict) -> list[AptamerCandidate]:
-    """Build observed aptamer candidates from real SELEX counts.
+def build_candidates_from_counts(
+    table: list[dict], rounds: list[str], config: dict
+) -> list[AptamerCandidate]:
+    """Apply the pipeline's QC and CPM rules to a selected set of rounds.
 
-    Args:
-        config: Full pipeline config.
-
-    Returns:
-        List of AptamerCandidate objects that pass quality filters.
+    Keeping this logic in one place matters for walk-forward validation: each
+    historical split must rebuild its candidate pool without looking at future
+    rounds, while using exactly the same rules as a normal pipeline run.
     """
+    if len(rounds) < 2:
+        raise ValueError("At least two rounds are required to build candidates.")
+
     lib_config = config["library"]
     length_min = lib_config.get("length_min", 0)
     length_max = lib_config.get("length_max", 10_000)
@@ -358,9 +361,13 @@ def generate_library(config: dict) -> list[AptamerCandidate]:
     max_homo = lib_config.get("max_homopolymer", 1000)
     min_total_count = lib_config.get("min_total_count", 1)
 
-    table, rounds = _load_selex_counts(config)
-    # We keep round totals around to convert raw counts to CPM (The Starting Line station).
     round_totals = {r: float(sum(record[r] for record in table)) for r in rounds}
+    empty_rounds = [r for r, total in round_totals.items() if total <= 0]
+    if empty_rounds:
+        raise ValueError(
+            "One or more selected rounds have zero total reads: "
+            f"{', '.join(empty_rounds)}. Cannot normalize CPM."
+        )
 
     logger.info(
         "Constructing candidates from observed sequences with QC filters "
@@ -390,9 +397,7 @@ def generate_library(config: dict) -> list[AptamerCandidate]:
             filtered_count += 1
             continue
 
-        # CPM lets us compare rounds with different sequencing depths on equal footing.
         cpm = {r: (counts[r] / round_totals[r]) * 1e6 for r in rounds}
-
         candidates.append(AptamerCandidate(
             id="",
             sequence=seq,
@@ -400,7 +405,7 @@ def generate_library(config: dict) -> list[AptamerCandidate]:
             gc=gc_content(seq),
             round_counts=counts,
             round_cpm=cpm,
-            round_order=rounds,
+            round_order=list(rounds),
         ))
 
     if not candidates:
@@ -424,5 +429,10 @@ def generate_library(config: dict) -> list[AptamerCandidate]:
         "min_total_count.",
         len(candidates), filtered_qc, filtered_count
     )
-
     return candidates
+
+
+def generate_library(config: dict) -> list[AptamerCandidate]:
+    """Build observed candidates from every round in the configured count file."""
+    table, rounds = load_selex_counts(config)
+    return build_candidates_from_counts(table, rounds, config)

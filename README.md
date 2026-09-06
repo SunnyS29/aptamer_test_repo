@@ -276,6 +276,8 @@ src/
 ├── target_analyzer.py     # Security Check target validation
 ├── filter_rank.py         # The Winning Bunch filtering and ranking
 ├── structure_predictor.py # Optional structure annotations
+├── stopping_diagnostic.py # Optional stopping-point health check
+├── validation_diagnostic.py # Optional bootstrap + walk-forward checks
 └── utils.py               # Shared helpers
 ```
 
@@ -304,6 +306,41 @@ Recommendation output:
 - `A`: Sequence more rounds
 - `B`: Stop and validate
 - `C`: Potential over-selection, review earlier rounds
+
+## Optional Confidence Failsafe
+
+This is not a sixth station and it does not change **The Winning Bunch**. We run it after the normal pipeline when we want more evidence before committing laboratory time and reagents to a shortlist.
+
+```bash
+python -m src.validation_diagnostic \
+  --config config/pipeline_config.yaml \
+  --bootstrap-replicates 200 \
+  --top-k 10
+```
+
+The report is saved as `validation_report.json` inside the configured output directory.
+
+What it tells us:
+
+- **Bootstrap confidence:** we resample each round at the same read depth and rerun the real enrichment score. This tells us how often each original leader stays in the top `K`.
+- **95% rank interval:** this shows how far a candidate moves across resamples. A narrow interval is steadier, and the challenger list shows which candidates sometimes take its place.
+- **Walk-forward overlap:** we hide one later round, rank candidates using only the earlier rounds, and then compare our prediction with the hidden leaders.
+- **Spearman correlation:** this compares the earlier score order with the hidden CPM order. `1` means strong agreement, `0` means little rank relationship, and a negative value means the order tends to reverse.
+- **Training eligibility:** this tells us whether hidden leaders had enough earlier evidence to enter the race. Sparse early splits are labelled `not_evaluable` and left out of averages instead of being given a misleading zero.
+
+Where this check stops:
+
+- Bootstrap confidence measures read-sampling uncertainty. It cannot remove PCR bias, non-specific selection, or biological variation.
+- Walk-forward validation tests future sequencing abundance, not physical target binding.
+- We rebuild every training pool from its earlier rounds only, so later counts cannot leak into an earlier prediction.
+- Start with `20-50` bootstrap replicates for a quick check. Use at least `200` for a final report; runtime grows roughly with the number of replicates.
+- The random seed defaults to `42`, so we can reproduce the same result later.
+
+Helpful tips:
+
+- If you see **"Walk-forward validation requires at least three rounds"**, do not panic. We need one hidden round in addition to the two rounds required for scoring.
+- If NumPy is missing, run `pip install -r requirements.txt`.
+- If no candidates pass the enrichment floor, check `filtering.min_log2_enrichment` before adding more computation.
 
 ## License
 

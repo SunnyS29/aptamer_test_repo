@@ -110,6 +110,23 @@ def compute_diversity_scores(all_sequences: list[str], kmer_size: int = 3) -> li
     return scores
 
 
+def rank_enrichment_scores(candidates: list, binding_scores: list, config: dict) -> list:
+    """Apply the enrichment floor and return scores in final rank order."""
+    minimum = config.get("filtering", {}).get("min_log2_enrichment")
+    score_map = {score.aptamer_id: score for score in binding_scores}
+    retained = []
+    for candidate in candidates:
+        score = score_map.get(candidate.id)
+        if score is None:
+            continue
+        if minimum is not None:
+            log2_enrichment = float(score.features.get("log2_enrichment", 0.0))
+            if log2_enrichment < float(minimum):
+                continue
+        retained.append(score)
+    return sorted(retained, key=lambda score: score.score, reverse=True)
+
+
 def filter_and_rank(candidates: list, structures: list,
                     binding_scores: list, config: dict) -> list[RankedCandidate]:
     """Filter and rank aptamer candidates by measured enrichment score.
@@ -127,8 +144,6 @@ def filter_and_rank(candidates: list, structures: list,
     scoring_config = config.get("scoring", {})
 
     top_n = filter_config.get("top_n", 50)
-    min_log2_enrichment = filter_config.get("min_log2_enrichment")
-
     diversity_kmer_size = int(scoring_config.get("diversity_kmer_size", 3))
     if diversity_kmer_size < 1:
         raise ValueError(
@@ -141,26 +156,13 @@ def filter_and_rank(candidates: list, structures: list,
     cand_map = {c.id: c for c in candidates}
 
     logger.info("Filtering candidates with enrichment-driven ranking.")
+    ordered_scores = rank_enrichment_scores(candidates, binding_scores, config)
+    logger.info(
+        f"After filtering: {len(ordered_scores)}/{len(candidates)} candidates remain"
+    )
 
-    # First pass: only enrichment-based hard filters remain.
-    filtered_ids = []
-    for candidate in candidates:
-        score = score_map.get(candidate.id)
-        if score is None:
-            continue
-        if min_log2_enrichment is not None:
-            seq_log2 = score.features.get("log2_enrichment", 0.0)
-            if seq_log2 < float(min_log2_enrichment):
-                continue
-        filtered_ids.append(candidate.id)
-
-    logger.info(f"After filtering: {len(filtered_ids)}/{len(candidates)} candidates remain")
-
-    # Rank on measured enrichment first. Diversity is calculated afterwards so
-    # it can describe the shortlist without displacing a stronger trajectory.
-    shortlisted_ids = sorted(
-        filtered_ids, key=lambda apt_id: score_map[apt_id].score, reverse=True
-    )[:top_n]
+    # Diversity describes the shortlist without displacing a stronger trajectory.
+    shortlisted_ids = [score.aptamer_id for score in ordered_scores[:top_n]]
     shortlisted_sequences = [cand_map[apt_id].sequence for apt_id in shortlisted_ids]
     shortlist_diversity_scores = compute_diversity_scores(
         shortlisted_sequences, kmer_size=diversity_kmer_size
