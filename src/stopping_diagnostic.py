@@ -15,6 +15,7 @@ from pathlib import Path
 from statistics import mean, median, pstdev
 
 from src.utils import load_config
+from src.sequence_generator import load_selex_counts
 
 FINAL_UNIQUE_SEQUENCE_THRESHOLD = 10_000_000
 REDUNDANCY_CONFIDENCE_THRESHOLD = 5.0
@@ -48,32 +49,15 @@ class MarkerSummary:
     phase_call: str
 
 
-def _round_columns(fieldnames: list[str]) -> list[str]:
-    return sorted(
-        [c for c in fieldnames if c.startswith("round_")],
-        key=lambda c: int(c.split("_")[1]),
-    )
-
-
 def _safe_div(numerator: float, denominator: float) -> float:
     return numerator / denominator if denominator else 0.0
 
 
-def _load_round_totals(counts_file: Path) -> tuple[list[dict], list[str], dict[str, int]]:
-    with open(counts_file) as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames or []
-        rounds = _round_columns(fieldnames)
-        rows = []
-        totals = {r: 0 for r in rounds}
-        for row in reader:
-            parsed = {"sequence": row["sequence"]}
-            for round_name in rounds:
-                count = int(row[round_name])
-                parsed[round_name] = count
-                totals[round_name] += count
-            rows.append(parsed)
-    return rows, rounds, totals
+def _load_round_totals(counts_file: Path, config: dict | None = None) -> tuple[list[dict], list[str], dict[str, int]]:
+    # The diagnostic must use the same formats, round mapping, and duplicate handling as scoring.
+    config = config or {"selex": {"counts_file": str(counts_file)}}
+    rows, rounds = load_selex_counts(config)
+    return rows, rounds, {r: sum(row[r] for row in rows) for r in rounds}
 
 
 def _load_ranked(ranked_file: Path) -> list[dict]:
@@ -89,6 +73,8 @@ def _top_k_by_round(
     total = totals[round_name]
     scored = []
     for row in rows:
+        if row[round_name] <= 0:
+            continue
         cpm = _safe_div(row[round_name], total) * 1_000_000
         scored.append((cpm, row["sequence"]))
     scored.sort(reverse=True)
@@ -150,21 +136,24 @@ def _trajectory_markers_for_top3(
 
 
 def _coverage_metrics(
-    rows: list[dict], final_round: str, raw_total: int
+    rows: list[dict], final_round: str, raw_total: int, ranked_sequences: set[str]
 ) -> dict[str, float]:
     final_sorted = sorted((r[final_round] for r in rows), reverse=True)
-    ranked_total = sum(final_sorted)
+    ranked_sorted = sorted(
+        (r[final_round] for r in rows if r["sequence"] in ranked_sequences), reverse=True
+    )
+    ranked_total = sum(ranked_sorted)
 
-    def _cov(k: int, denom: int) -> float:
-        return _safe_div(sum(final_sorted[:k]), denom) * 100
+    def _cov(counts: list[int], k: int, denom: int) -> float:
+        return _safe_div(sum(counts[:k]), denom) * 100
 
     return {
-        "top1_raw_pct": _cov(1, raw_total),
-        "top10_raw_pct": _cov(10, raw_total),
-        "top100_raw_pct": _cov(100, raw_total),
-        "top1_ranked_pool_pct": _cov(1, ranked_total),
-        "top10_ranked_pool_pct": _cov(10, ranked_total),
-        "top100_ranked_pool_pct": _cov(100, ranked_total),
+        "top1_raw_pct": _cov(final_sorted, 1, raw_total),
+        "top10_raw_pct": _cov(final_sorted, 10, raw_total),
+        "top100_raw_pct": _cov(final_sorted, 100, raw_total),
+        "top1_ranked_pool_pct": _cov(ranked_sorted, 1, ranked_total),
+        "top10_ranked_pool_pct": _cov(ranked_sorted, 10, ranked_total),
+        "top100_ranked_pool_pct": _cov(ranked_sorted, 100, ranked_total),
     }
 
 
@@ -282,7 +271,14 @@ def _recommendation(
     pace_mean: float,
     pace_cv: float,
     mean_accel: float,
+    leaderboard_resolved: bool = True,
 ) -> tuple[str, str, str]:
+    if redundancy_ratio < REDUNDANCY_CONFIDENCE_THRESHOLD:
+        return (
+            "A",
+            "Read redundancy is below 5. Check sequencing depth before treating leaderboard stability as convergence.",
+            "insufficient_sampling",
+        )
     if cov_top1_raw >= 35.0 or cov_top10_raw >= 75.0:
         return (
             "C",
@@ -290,16 +286,17 @@ def _recommendation(
             "over_selected",
         )
 
+    if not leaderboard_resolved:
+        return (
+            "A",
+            "Counts are tied at a top-10 boundary. Check sequencing depth; the apparent overlap depends on arbitrary tie ordering.",
+            "unresolved_leaderboard",
+        )
+
     if overlap_pct >= 80.0 and final_unique_sequences < FINAL_UNIQUE_SEQUENCE_THRESHOLD:
-        if redundancy_ratio >= REDUNDANCY_CONFIDENCE_THRESHOLD:
-            return (
-                "B",
-                "Leaderboard stability is high and final-round redundancy suggests the same winners are being observed repeatedly.",
-                "converged",
-            )
         return (
             "B",
-            "Leaderboard stability is high and final-round unique sequence count has dropped into a more confidence-friendly range.",
+            "Leaderboard stability and read redundancy meet the screening thresholds. Validate binding before calling these winners.",
             "converged",
         )
 
@@ -341,17 +338,23 @@ def evaluate_stopping_point(
 
     by_sequence = {r["sequence"]: r for r in counts_rows}
     ranked_seq = {r["sequence"] for r in ranked_rows}
-    if not any(seq in by_sequence for seq in ranked_seq):
-        raise ValueError("No overlap between ranked output and count table sequences.")
+    if not ranked_seq or not ranked_seq.issubset(by_sequence):
+        raise ValueError("Ranked output is empty or contains sequences absent from the counts. Tip: use results from the same run.")
 
     prev_round, final_round = rounds[-2], rounds[-1]
 
-    top10_final = _top_k_by_round(counts_rows, final_round, round_totals, 10)
-    top10_prev = _top_k_by_round(counts_rows, prev_round, round_totals, 10)
+    # One extra entry tells us whether arbitrary tie ordering decides membership.
+    final_leaders = _top_k_by_round(counts_rows, final_round, round_totals, 11)
+    previous_leaders = _top_k_by_round(counts_rows, prev_round, round_totals, 11)
+    cutoff_tied = any(
+        len(leaders) > 10 and leaders[9][0] == leaders[10][0]
+        for leaders in (final_leaders, previous_leaders)
+    )
+    top10_final, top10_prev = final_leaders[:10], previous_leaders[:10]
     seq_final = {s for _, s in top10_final}
     seq_prev = {s for _, s in top10_prev}
     overlap = len(seq_final & seq_prev)
-    overlap_pct = overlap * 10.0
+    overlap_pct = _safe_div(overlap, max(len(seq_final), len(seq_prev))) * 100
     jaccard = _safe_div(overlap, len(seq_final | seq_prev))
 
     top3_ranked = ranked_rows[:3]
@@ -359,7 +362,7 @@ def evaluate_stopping_point(
         top3_ranked, by_sequence, rounds, round_totals
     )
 
-    cov = _coverage_metrics(counts_rows, final_round, round_totals[final_round])
+    cov = _coverage_metrics(counts_rows, final_round, round_totals[final_round], ranked_seq)
     library_health = _library_health_metrics(
         counts_rows, final_round, round_totals[final_round]
     )
@@ -384,6 +387,7 @@ def evaluate_stopping_point(
         pace_mean=pace_mean,
         pace_cv=pace_cv,
         mean_accel=mean_accel,
+        leaderboard_resolved=not cutoff_tied,
     )
 
     score = _data_quality_score(
@@ -424,6 +428,7 @@ def evaluate_stopping_point(
     )
 
     detail = {
+        "leaderboard_cutoff_tied": cutoff_tied,
         "previous_round": prev_round,
         "final_round": final_round,
         "top10_previous_round": [
@@ -472,7 +477,7 @@ def main() -> None:
         else Path(cfg["output"]["directory"]) / "ranked_candidates.csv"
     )
 
-    counts_rows, rounds, totals = _load_round_totals(counts_file)
+    counts_rows, rounds, totals = _load_round_totals(counts_file, cfg)
     ranked_rows = _load_ranked(ranked_file)
 
     summary, detail = evaluate_stopping_point(
@@ -491,7 +496,7 @@ def main() -> None:
     s = summary
     print(f"Rounds: {detail['previous_round']} -> {detail['final_round']}")
     print(
-        f"Leaderboard stability: {s.leaderboard_overlap_count}/10 overlap "
+        f"Leaderboard stability: {s.leaderboard_overlap_count} shared leaders "
         f"({s.leaderboard_overlap_pct:.1f}%, jaccard={s.leaderboard_jaccard:.3f})"
     )
     print(
@@ -515,7 +520,7 @@ def main() -> None:
         f"mean={s.pace_mean_top100:.4f}, median={s.pace_median_top100:.4f}, "
         f"cv={s.pace_cv_top100:.4f}, pace>=0.7={s.pace_ge_0_7_count}"
     )
-    print(f"Data quality score: {s.data_quality_score:.1f}/100")
+    print(f"Heuristic data quality score (not a probability): {s.data_quality_score:.1f}/100")
     print(f"Recommendation: {s.recommendation} ({s.recommendation_reason})")
 
 

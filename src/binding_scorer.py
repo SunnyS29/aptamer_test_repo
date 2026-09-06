@@ -211,12 +211,16 @@ def score_binding(candidates: list, config: Optional[dict] = None) -> list[Bindi
 
     scoring_config = config.get("scoring", {})
     pseudocount = float(scoring_config.get("pseudocount", 1.0))
+    if not math.isfinite(pseudocount) or pseudocount <= 0:
+        raise ValueError("scoring.pseudocount must be finite and greater than 0. Tip: use 1.0 unless you have a reason to change it.")
     vectorized_metrics = bool(scoring_config.get("vectorized_metrics", False))
     growth_weights = scoring_config.get("growth_weights", {})
     w_fold = float(growth_weights.get("fold_change", 0.85))
     w_trend = float(growth_weights.get("trend", 0.15))
+    if any(not math.isfinite(weight) or weight < 0 for weight in (w_fold, w_trend)):
+        raise ValueError("Growth score weights must be finite and non-negative.")
     weight_sum = w_fold + w_trend
-    if weight_sum <= 0:
+    if not math.isfinite(weight_sum) or weight_sum <= 0:
         raise ValueError("Growth score weights must sum to a positive value.")
     w_fold /= weight_sum
     w_trend /= weight_sum

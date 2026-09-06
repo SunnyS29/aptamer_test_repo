@@ -56,23 +56,11 @@ def _repeat_config(config: dict) -> dict:
     return repeated
 
 
-def _resample_candidates(candidates, table, rounds, rng, np):
-    """Multinomially resample each round while preserving its total depth."""
-    totals = {round_name: sum(row[round_name] for row in table) for round_name in rounds}
-    sampled = {}
-    for round_name in rounds:
-        kept = np.asarray(
-            [candidate.round_counts[round_name] for candidate in candidates],
-            dtype=np.int64,
-        )
-        background = totals[round_name] - int(kept.sum())
-        if background < 0:
-            raise ValueError(f"Candidate counts exceed total reads in {round_name}.")
-        probabilities = np.append(kept, background) / totals[round_name]
-        sampled[round_name] = rng.multinomial(
-            totals[round_name], probabilities
-        )[:-1]
-
+def _resample_candidates(candidates, rounds, totals, probabilities, rng, np):
+    """Resample reads using round depths and probabilities prepared once."""
+    sampled = {
+        r: rng.multinomial(totals[r], probabilities[r])[:-1] for r in rounds
+    }
     result = []
     for index, candidate in enumerate(candidates):
         counts = {r: int(sampled[r][index]) for r in rounds}
@@ -120,8 +108,18 @@ def bootstrap_confidence(
     exact_set_count = 0
     rng = np.random.default_rng(seed)
 
+    # These values do not change between repeats, even when the count table is huge.
+    totals = {r: sum(row[r] for row in table) for r in rounds}
+    probabilities = {}
+    for r in rounds:
+        kept = np.asarray([candidate.round_counts[r] for candidate in candidates], dtype=np.int64)
+        background = totals[r] - int(kept.sum())
+        if totals[r] <= 0 or background < 0:
+            raise ValueError(f"Invalid read total or candidate counts in {r}.")
+        probabilities[r] = np.append(kept, background) / totals[r]
+
     for _ in range(replicates):
-        resampled = _resample_candidates(candidates, table, rounds, rng, np)
+        resampled = _resample_candidates(candidates, rounds, totals, probabilities, rng, np)
         with _quiet_repeated_runs():
             ranked = rank_enrichment_scores(
                 resampled, score_binding(resampled, repeat_config), config
@@ -194,14 +192,16 @@ def _rankdata(values: list[float], np):
     return ranks
 
 
-def _spearman(x_values: list[float], y_values: list[float], np) -> float:
+def _spearman(x_values: list[float], y_values: list[float], np) -> float | None:
     """Calculate Spearman correlation without adding SciPy as a dependency."""
-    if len(x_values) != len(y_values) or len(x_values) < 2:
-        return 0.0
+    if len(x_values) != len(y_values):
+        raise ValueError("Spearman inputs must have the same length.")
+    if len(x_values) < 2:
+        return None
     x_ranks = _rankdata(x_values, np)
     y_ranks = _rankdata(y_values, np)
     if float(np.std(x_ranks)) == 0.0 or float(np.std(y_ranks)) == 0.0:
-        return 0.0
+        return None
     return float(np.corrcoef(x_ranks, y_ranks)[0, 1])
 
 
@@ -291,6 +291,7 @@ def walk_forward_validation(
             next_cpm = row[heldout_round] / totals[heldout_round] * 1_000_000
             deltas.append(math.log2(next_cpm + 1) - math.log2(previous_cpm + 1))
 
+        correlation = _spearman(score_values, heldout_cpm, np)
         splits.append({
             "training_rounds": training_rounds,
             "status": "evaluated",
@@ -299,9 +300,8 @@ def walk_forward_validation(
             "top_k_overlap_count": overlap,
             "top_k_overlap_pct": round(overlap / len(heldout_leaders) * 100, 2),
             "heldout_top_k_eligible_from_training": len(set(heldout_leaders) & eligible),
-            "spearman_score_vs_heldout_cpm": round(
-                _spearman(score_values, heldout_cpm, np), 4
-            ),
+            "spearman_candidate_count": len(ranked),
+            "spearman_score_vs_heldout_cpm": round(correlation, 4) if correlation is not None else None,
             "predicted_positive_next_step_pct": round(
                 sum(delta > 0 for delta in deltas) / len(deltas) * 100, 2
             ) if deltas else 0.0,
@@ -311,6 +311,10 @@ def walk_forward_validation(
         })
 
     evaluated = [split for split in splits if split["status"] == "evaluated"]
+    correlations = [
+        split["spearman_score_vs_heldout_cpm"] for split in evaluated
+        if split["spearman_score_vs_heldout_cpm"] is not None
+    ]
     return {
         "top_k": top_k,
         "split_count": len(splits),
@@ -320,10 +324,8 @@ def walk_forward_validation(
             round(mean(s["top_k_overlap_pct"] for s in evaluated), 2)
             if evaluated else None
         ),
-        "mean_spearman_score_vs_heldout_cpm": (
-            round(mean(s["spearman_score_vs_heldout_cpm"] for s in evaluated), 4)
-            if evaluated else None
-        ),
+        "spearman_evaluated_split_count": len(correlations),
+        "mean_spearman_score_vs_heldout_cpm": round(mean(correlations), 4) if correlations else None,
         "mean_predicted_positive_next_step_pct": (
             round(mean(s["predicted_positive_next_step_pct"] for s in evaluated), 2)
             if evaluated else None
@@ -339,6 +341,8 @@ def walk_forward_validation(
 def run_validation(config: dict, replicates: int = 200, top_k: int = 10, seed: int = 42) -> dict:
     """Run both checks from one count-table load."""
     table, rounds = load_selex_counts(config)
+    if len(rounds) < 3:
+        raise ValueError("Walk-forward validation needs at least three rounds. Tip: two rounds can be scored, but cannot support this check.")
     candidates = build_candidates_from_counts(table, rounds, config)
     return {
         "rounds": rounds,

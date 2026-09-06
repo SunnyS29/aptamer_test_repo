@@ -111,14 +111,14 @@ def test_convert_round_files_extracts_insert_between_anchors(tmp_path):
     round1 = tmp_path / "round_1.fastq"
     round2 = tmp_path / "round_2.fastq"
     round1.write_text(
-        "@r1\nLEFTAACCRIGHT\n+\n##############\n"
-        "@r2\nLEFTAACCRIGHT\n+\n##############\n"
-        "@r3\nLEFTGGTTRIGHT\n+\n##############\n"
+        "@r1\nLEFTAACCRIGHT\n+\n#############\n"
+        "@r2\nLEFTAACCRIGHT\n+\n#############\n"
+        "@r3\nLEFTGGTTRIGHT\n+\n#############\n"
         "@r4\nNOANCHOR\n+\n########\n"
     )
     round2.write_text(
-        "@r1\nLEFTAACCRIGHT\n+\n##############\n"
-        "@r2\nLEFTTTAARIGHT\n+\n##############\n"
+        "@r1\nLEFTAACCRIGHT\n+\n#############\n"
+        "@r2\nLEFTTTAARIGHT\n+\n#############\n"
     )
 
     out_csv = tmp_path / "anchored_counts.csv"

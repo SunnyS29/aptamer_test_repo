@@ -82,6 +82,7 @@ def _iter_fasta_sequences(path: Path) -> Iterable[str]:
     together before yielding the sequence.
     """
     seq_parts: list[str] = []
+    has_header = False
 
     with _open_text(path) as handle:
         for line in handle:
@@ -89,10 +90,13 @@ def _iter_fasta_sequences(path: Path) -> Iterable[str]:
             if not text:
                 continue
             if text.startswith(">"):
+                has_header = True
                 if seq_parts:
                     yield "".join(seq_parts)
                     seq_parts = []
                 continue
+            if not has_header:
+                raise ValueError(f"Missing FASTA header in '{path}'. Tip: each record must start with >name.")
             seq_parts.append(text)
 
     if seq_parts:
@@ -125,6 +129,11 @@ def _iter_fastq_sequences(path: Path) -> Iterable[str]:
             if not header.startswith("@") or not plus.startswith("+"):
                 raise ValueError(
                     f"Malformed FASTQ record in '{path}' near line {line_number}."
+                )
+            if len(seq.rstrip("\r\n")) != len(qual.rstrip("\r\n")):
+                raise ValueError(
+                    f"FASTQ sequence and quality lengths differ in '{path}' near line {line_number}. "
+                    "Tip: check the download or export before counting these reads."
                 )
             yield seq.strip()
 
@@ -213,11 +222,19 @@ def _resolve_round_labels(
             raise ValueError(
                 "When provided, --round-labels must have the same length as input files."
             )
-        return round_files, round_labels
+        labels = [label.strip() for label in round_labels]
+        if any(not label for label in labels) or len(set(labels)) != len(labels):
+            raise ValueError("Round labels must be non-empty and unique. Tip: give each selection round its own label.")
+        return round_files, labels
 
     inferred = [_infer_round_number(path) for path in round_files]
     all_inferred = all(value is not None for value in inferred)
     unique_inferred = len(set(inferred)) == len(inferred)
+    if any(value is not None for value in inferred) and not (all_inferred and unique_inferred):
+        raise ValueError(
+            "Round numbers in the filenames are incomplete or duplicated. "
+            "Tip: use one file per selection round and provide --round-labels; paired reads are not separate rounds."
+        )
     if all_inferred and unique_inferred:
         ordered = sorted(
             zip(round_files, inferred), key=lambda item: int(item[1])  # type: ignore[arg-type]

@@ -5,6 +5,7 @@ Enrichment determines rank. Diversity and structure are optional annotations.
 """
 
 import logging
+import math
 from dataclasses import dataclass
 
 logger = logging.getLogger("aptamer_pipeline")
@@ -113,6 +114,8 @@ def compute_diversity_scores(all_sequences: list[str], kmer_size: int = 3) -> li
 def rank_enrichment_scores(candidates: list, binding_scores: list, config: dict) -> list:
     """Apply the enrichment floor and return scores in final rank order."""
     minimum = config.get("filtering", {}).get("min_log2_enrichment")
+    if minimum is not None and not math.isfinite(float(minimum)):
+        raise ValueError("filtering.min_log2_enrichment must be finite or null.")
     score_map = {score.aptamer_id: score for score in binding_scores}
     retained = []
     for candidate in candidates:
@@ -144,6 +147,8 @@ def filter_and_rank(candidates: list, structures: list,
     scoring_config = config.get("scoring", {})
 
     top_n = filter_config.get("top_n", 50)
+    if isinstance(top_n, bool) or not isinstance(top_n, int) or top_n < 1:
+        raise ValueError("filtering.top_n must be a positive integer. Tip: use 50 for a small shortlist.")
     diversity_kmer_size = int(scoring_config.get("diversity_kmer_size", 3))
     if diversity_kmer_size < 1:
         raise ValueError(

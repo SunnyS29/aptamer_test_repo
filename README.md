@@ -9,7 +9,7 @@ This README explains each processing step and the checks behind the final output
 
 - **It is** an empirical analysis pipeline that reads real sequence counts from SELEX rounds.
 - **It is not** a random-sequence generator.
-- **It records its decisions:** we can trace why each sequence was kept, filtered, or ranked.
+- **It records the run:** logs give filter totals, and exported scores explain the retained shortlist. We do not yet export a separate rejection reason for every discarded sequence.
 - **It is not** a reliable aptamer structure predictor. Rough structure annotations can be attached, but they are not used to rank winners.
 - **It does not** replace wet-lab validation. The shortlist is meant to narrow the field, not prove binding on its own.
 
@@ -34,7 +34,7 @@ This README explains each processing step and the checks behind the final output
 ### 4. Security Check (Target Verification)
 - Fetches target information from PDB/UniProt (or reads FASTA).
 - If target retrieval fails, the run hard-stops.
-- This prevents later stages from running without verified target data.
+- This checks target-file format and retrieval, not binding. Target features do not contribute to the enrichment score.
 
 ### 5. The Winning Bunch (Filtering + Ranking)
 - Removes weak candidates using enrichment thresholds.
@@ -67,7 +67,7 @@ Think of every sequence as a runner in a stadium. The question is not who looked
 - Job: score how strongly a sequence takes over the pool, while checking that it does not fade at the finish.
 - Exact methods used:
 - `log2` enrichment: measures doubling-like growth from first round to last round.
-- Least-squares slope: fits a straight trend line across rounds to measure overall upward movement.
+- Least-squares slope: fits a straight trend line across sampled rounds to measure overall upward movement. Samples are equally spaced in this calculation, even if biological rounds were skipped.
 - Terminal guardrail: checks whether the last round goes down versus the round before it.
 - Min-max scaling: rescales the growth features to `0-1` so they can be combined fairly.
 - Weighted core: fold change `0.85` and slope `0.15`; the result is then multiplied once by the squared terminal guardrail for a strong, graded fade penalty.
@@ -164,7 +164,7 @@ What this does:
 
 Helpful tip:
 - If you do not pass `--round-labels`, round numbers are guessed from file names like `round_3`, `r3`, or `rnd3`.
-- If round numbers are not in file names, files are sorted alphabetically.
+- If none of the file names contain round numbers, files are sorted alphabetically. Check that this is the real selection order, or provide `--round-labels`. Partly labelled or duplicate rounds now stop rather than being silently renamed.
 - If your FASTQ reads still include constant primer regions, add `--left-anchor` and `--right-anchor` to count only the variable insert.
 
 Example with anchor extraction:
@@ -192,7 +192,8 @@ TGCA...,8,12,9
 
 What matters:
 - First column is sequence text (`sequence`).
-- Each round has its own count column (`round_1`, `round_2`, etc.).
+- Each round has its own count column (`round_1`, `round_2`, etc.). Headers must be unique.
+- Use an explicit `0` when a sequence was not observed. Blank counts and incomplete rows now stop the run, because a missing measurement is not evidence of absence.
 
 ### Option 2: Long table (one row per sequence per round)
 Use this if your export is already in long format.
@@ -205,13 +206,16 @@ ACGT...,round_2,25
 
 What matters:
 - Must include all three columns: `sequence`, `round`, `count`.
-- Counts must be whole numbers (no decimals).
+- Counts must be whole, non-negative numbers. Present rows need a count; a missing sequence-round pair is treated as zero in this sparse format. Use it only when an omitted pair really means no reads were observed.
+- Sequence text is uppercased and `U` is converted to `T`. Candidates with ambiguous or invalid bases, including `N`, are excluded by sequence QC rather than offered for synthesis.
 
 ### Option 3: Raw sequencing files (FASTQ/FASTA)
 Use this when starting from raw files from the sequencer.
 
 - Supported: `.fastq`, `.fastq.gz`, `.fasta`, `.fasta.gz`
-- One file should represent one round.
+- One file should represent one selection round, not one paired-end mate or one sequencing lane. Merge paired reads or combine lanes appropriately before using the converter.
+- FASTA records must represent individual reads. A published list of winners or a file with one record per unique sequence does not preserve read counts.
+- We check FASTQ record structure and matching sequence/quality lengths. We do not filter on Phred scores or correct sequencing errors; prepare reads for your experiment before counting.
 - Convert first with `python -m src.fasta_round_counter ...`
 - Then run the pipeline on the new counts table.
 
@@ -227,11 +231,11 @@ Edit `config/pipeline_config.yaml`:
 - `target`: where target info comes from (`pdb_id`, `fasta`, `smiles`, `uniprot`)
 - `selex.counts_file`: the counts table path
 - `library`: sequence QC filters (length, GC, homopolymer, min total count)
-- `scoring`: pseudocount + growth weights
+- `scoring`: pseudocount + growth weights. The pseudocount must be finite and positive; weights must be finite, non-negative, and have a positive sum.
 - `scoring.vectorized_metrics`: set `true` to speed up enrichment and slope calculations with NumPy on large libraries (default `false`)
 - The squared terminal guardrail is applied once after the weighted enrichment score; it is not an additional weighted component
 - `scoring.diversity_kmer_size`: k-mer size used for diversity rarity scoring (default `3`)
-- `filtering`: shortlist strictness (`top_n`, `min_log2_enrichment`)
+- `filtering`: shortlist strictness. `top_n` must be a positive integer; `min_log2_enrichment` must be a finite number or `null`.
 - `output`: file format + output directory
 
 ## Friendly Troubleshooting (By Section)
@@ -240,7 +244,9 @@ Edit `config/pipeline_config.yaml`:
 - If the pipeline says **"Could not find a sequence column"**, it usually means column headers are inconsistent.
 - Tip: rename the sequence column to `sequence` and rerun.
 - If conversion fails with **"Unsupported input format"**, check file suffixes.
-- Tip: rename files to `.fastq(.gz)` or `.fasta(.gz)` and rerun the converter.
+- Tip: check that the file really contains FASTA or FASTQ before correcting its suffix. Renaming a spreadsheet will not convert it.
+- **"Round labels must be non-empty and unique"** means two inputs may have been assigned to the same round. Check the file-to-round mapping; do not label paired-end mates as different selection rounds.
+- **"FASTQ sequence and quality lengths differ"** means the record is damaged or incorrectly exported. Check the source download rather than trimming characters just to make it pass.
 
 ### The Starting Line
 - If you see **"One or more rounds have zero total reads"**, normalisation cannot proceed safely.
@@ -256,10 +262,12 @@ Edit `config/pipeline_config.yaml`:
 ### Security Check
 - If you see **"Failed to fetch PDB target"** or **"No sequence found"**, the run is correctly blocking unsafe analysis.
 - Tip: check network access, ID spelling, or switch to a local FASTA target file.
-- The run stops early here because silent fallback would corrupt later decisions.
+- If UniProt returns a web page instead of one FASTA record, the run stops even when the HTTP request says it succeeded.
+- Check target identity yourself: local FASTA uses its first record, and PDB retrieval uses polymer entity 1. Valid sequence letters alone cannot confirm that you chose the intended binding protein.
 
 ### The Winning Bunch
-- If you get **"No candidates passed filters"**, the filters are likely too strict for the current dataset.
+- If you get **"No candidates passed filters"**, inspect the evidence before relaxing the filters. The completed run now writes a header-only CSV and an empty JSON result, replacing old winners and removing an old summary plot.
+- Structure fields in a normal `all` run are placeholders, not measured results: `mfe=0`, `motif_count=0`, and `has_g_quadruplex=False` do not establish the absence of structure.
 - Tip: loosen `min_log2_enrichment` or lower `library.min_total_count` gradually and rerun.
 - Keep a record of threshold changes so shortlist criteria can be justified later.
 - If you see **"scoring.diversity_kmer_size must be >= 1"**, set `scoring.diversity_kmer_size` to `3` and rerun.
@@ -295,17 +303,23 @@ Use this when you want a quick health check on whether SELEX rounds are convergi
 python -m src.stopping_diagnostic --config config/pipeline_config.yaml
 ```
 
-It reports five universal markers:
+It reports five screening markers:
 - Leaderboard stability between the last two rounds
 - Top-candidate slope trajectory (acceleration/deceleration)
-- Pool dominance coverage (top 1 / 10 / 100)
+- Pool dominance coverage (top 1 / 10 / 100). Raw percentages use the whole count table; ranked-pool percentages use only exported shortlisted sequences.
 - Library health in the final round (reads, unique sequences, redundancy ratio)
 - Pace consistency across top-ranked candidates
 
 Recommendation output:
-- `A`: Sequence more rounds
+- `A`: More evidence needed. If sampling is sparse or the leaderboard is tied, review sequencing depth before adding selection rounds.
 - `B`: Stop and validate
 - `C`: Potential over-selection, review earlier rounds
+
+The stop check now reads the same CSV/TSV formats and configured rounds as the main pipeline. It excludes zero-count entries from the leaderboards and flags ties at the top-10 boundary.
+
+The library-health route to `B` requires at least 80% overlap, fewer than 10 million observed unique sequences, and at least 5 reads per observed unique sequence on average. Low redundancy blocks a stop recommendation, and tied leaderboard boundaries cannot establish convergence. A high average can still hide many singletons or PCR duplicates; repeated reads are not independent laboratory replicates.
+
+These cutoffs and the 0-100 data quality score are heuristics, not calibrated probabilities or universally validated lab thresholds. Dominance can prompt an over-selection warning, but it cannot establish PCR artifacts, binding affinity, or the target-to-aptamer ratio. Use the recommendation to plan a lab review, not as an automatic instruction to discard a round.
 
 ## Optional Confidence Failsafe
 
@@ -323,22 +337,23 @@ The report is saved as `validation_report.json` inside the configured output dir
 What it tells us:
 
 - **Bootstrap confidence:** we resample each round at the same read depth and rerun the enrichment score. The result shows how often each original leader stays in the top `K`.
-- **95% rank interval:** this shows how far a candidate moves across resamples. A narrow interval is steadier, and the challenger list shows which candidates sometimes take its place.
+- **95% rank interval:** the middle 95% of resampled ranks shows how far a candidate moves under this sampling model. A candidate that fails the enrichment floor is assigned rank `candidate_count + 1` for that repeat; the interval is not a probability of binding.
 - **Walk-forward overlap:** we hide one later round, rank candidates using only the earlier rounds, and then compare our prediction with the hidden leaders.
-- **Spearman correlation:** this compares the earlier score order with the hidden CPM order. `1` means strong agreement, `0` means little rank relationship, and a negative value means the order tends to reverse.
+- **Spearman correlation:** this compares scores of candidates passing the training enrichment floor with their hidden-round CPM. `1` means strong agreement, `0` means little rank relationship, and a negative value means the order tends to reverse. With fewer than two candidates or constant values, the result is `null`, not zero, and is excluded from the correlation average. The report includes the number of candidates and usable splits.
 - **Training eligibility:** this reports whether hidden leaders had enough earlier evidence to enter the race. Sparse early splits are labelled `not_evaluable` and left out of averages instead of being given a misleading zero.
 
 Where this check stops:
 
-- Bootstrap confidence measures read-sampling uncertainty. It cannot remove PCR bias, non-specific selection, or biological variation.
+- Bootstrap confidence measures read-sampling uncertainty within the original QC/count-retained candidate set. Excluded sequences stay in a pooled background, and unobserved sequences cannot appear. It cannot remove PCR bias, non-specific selection, or biological variation.
 - Walk-forward validation tests future sequencing abundance, not physical target binding.
 - We rebuild every training pool from its earlier rounds only, so later counts cannot leak into an earlier prediction.
 - Start with `20-50` bootstrap replicates for a quick check. Use at least `200` for a final report; runtime grows roughly with the number of replicates.
-- The random seed defaults to `42`, so we can reproduce the same result later.
+- The random seed defaults to `42`, so we can reproduce the same result later. We now prepare fixed round totals and sampling probabilities once, rather than rescanning the full table for every repeat.
+- Walk-forward evaluation does not undo earlier tuning on this dataset. Keep weights fixed before evaluating a new experiment if you want an independent assessment.
 
 Helpful tips:
 
-- **"Walk-forward validation requires at least three rounds"** means we need two rounds for scoring and one later round for validation.
+- **"Walk-forward validation needs at least three rounds"** means we need two rounds for scoring and one later round for validation.
 - If NumPy is missing, run `pip install -r requirements.txt`.
 - If no candidates pass the enrichment floor, check `filtering.min_log2_enrichment` before adding more computation.
 

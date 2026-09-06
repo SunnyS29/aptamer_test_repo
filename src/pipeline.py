@@ -17,6 +17,7 @@ import csv
 import json
 import logging
 import sys
+from dataclasses import fields
 from pathlib import Path
 
 from src.utils import load_config, setup_logging, ensure_output_dir
@@ -24,7 +25,7 @@ from src.sequence_generator import generate_library
 from src.target_analyzer import analyze_target
 from src.structure_predictor import predict_structures
 from src.binding_scorer import score_binding
-from src.filter_rank import filter_and_rank
+from src.filter_rank import RankedCandidate, filter_and_rank
 
 logger = logging.getLogger("aptamer_pipeline")
 
@@ -91,15 +92,19 @@ def generate_plots(ranked_candidates: list, output_dir: Path) -> None:
 def export_results(ranked_candidates: list, target_features,
                    output_dir: Path, fmt: str = "csv") -> None:
     """Export ranked candidates to CSV and/or JSON."""
+    if fmt not in ("csv", "json", "both"):
+        raise ValueError("output.format must be csv, json, or both.")
     if not ranked_candidates:
-        logger.warning("No candidates to export.")
-        return
+        logger.warning("No candidates passed the filters. Writing empty results so previous winners are not mistaken for this run.")
+        # Clear both result formats and the old plot, even if this run requested only CSV.
+        fmt = "both"
+        (output_dir / "pipeline_summary.png").unlink(missing_ok=True)
 
     records = [r.to_dict() for r in ranked_candidates]
 
     if fmt in ("csv", "both"):
         csv_path = output_dir / "ranked_candidates.csv"
-        fieldnames = list(records[0].keys())
+        fieldnames = list(records[0].keys()) if records else [field.name for field in fields(RankedCandidate)]
         with open(csv_path, "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()

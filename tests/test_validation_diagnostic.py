@@ -120,3 +120,34 @@ def test_walk_forward_marks_sparse_early_split_not_evaluable():
 def test_spearman_handles_tied_values():
     np = _numpy()
     assert _spearman([1, 2, 2, 4], [10, 20, 20, 40], np) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize('x,y', [([1], [2]), ([1,1], [2,3]), ([1,2], [3,3])])
+def test_undefined_spearman_is_not_reported_as_zero(x, y):
+    assert _spearman(x, y, _numpy()) is None
+
+
+def test_walk_forward_excludes_undefined_correlations():
+    rounds = ['round_1', 'round_2', 'round_3']
+    table = [{'sequence': 'ACGTACGT', **{r: 10 for r in rounds}}]
+    report = walk_forward_validation(table, rounds, _config(), top_k=1)
+    assert report['evaluated_split_count'] == 1
+    assert report['spearman_evaluated_split_count'] == 0
+    assert report['mean_spearman_score_vs_heldout_cpm'] is None
+    assert report['splits'][0]['spearman_score_vs_heldout_cpm'] is None
+
+
+def test_bootstrap_scans_table_once_not_once_per_repeat():
+    class CountingRow(dict):
+        reads = 0
+
+        def __getitem__(self, key):
+            type(self).reads += 1
+            return super().__getitem__(key)
+
+    rounds = ['round_1', 'round_2', 'round_3']
+    table = [CountingRow(sequence='ACGTACGT', round_1=10, round_2=20, round_3=30)]
+    candidates = build_candidates_from_counts(table, rounds, _config())
+    CountingRow.reads = 0
+    bootstrap_confidence(candidates, table, rounds, _config(), replicates=5, top_k=1)
+    assert CountingRow.reads == len(table) * len(rounds)

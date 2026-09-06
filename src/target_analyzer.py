@@ -75,6 +75,7 @@ def fetch_pdb_sequence(pdb_id: str) -> str:
         data = resp.json()
         sequence = data.get("entity_poly", {}).get("pdbx_seq_one_letter_code_can", "")
         if sequence:
+            _validate_protein_sequence(sequence)
             logger.info(f"Retrieved sequence: {len(sequence)} residues")
             return sequence
         raise RuntimeError(
@@ -96,13 +97,19 @@ def fetch_uniprot_sequence(uniprot_id: str) -> str:
     try:
         resp = requests.get(url, timeout=15)
         resp.raise_for_status()
-        lines = resp.text.strip().split("\n")
-        sequence = "".join(line for line in lines if not line.startswith(">"))
+        lines = resp.text.strip().splitlines()
+        if not lines or not lines[0].startswith(">") or sum(line.startswith(">") for line in lines) != 1:
+            raise RuntimeError(
+                f"UniProt target '{uniprot_id}' did not return a single FASTA record. "
+                "Tip: check the accession or use a local target FASTA; a web error page is not a sequence."
+            )
+        sequence = "".join(line.strip() for line in lines[1:]).upper()
         if not sequence:
             raise RuntimeError(
                 f"No sequence found for UniProt ID '{uniprot_id}'. "
                 "Tip: verify the accession ID and record status."
             )
+        _validate_protein_sequence(sequence)
         logger.info(f"Retrieved sequence: {len(sequence)} residues")
         return sequence
     except requests.RequestException as e:
@@ -110,6 +117,12 @@ def fetch_uniprot_sequence(uniprot_id: str) -> str:
             f"Failed to fetch UniProt target '{uniprot_id}': {e}. "
             "Tip: check network access or use FASTA input for offline runs."
         ) from e
+
+
+def _validate_protein_sequence(sequence: str) -> None:
+    # Allow standard and ambiguous amino-acid letters, but not HTML or arbitrary text.
+    if any(letter not in "ACDEFGHIKLMNPQRSTVWYBXZJUO" for letter in sequence.upper()):
+        raise ValueError("Target contains invalid protein sequence characters. Tip: check that the file contains the target sequence, not a web page or description.")
 
 
 def compute_features(sequence: str) -> dict:
@@ -202,6 +215,7 @@ def analyze_target(config: dict) -> TargetFeatures:
             "Security Check blocked this run to prevent silent failure."
         )
 
+    _validate_protein_sequence(sequence)
     features = compute_features(sequence)
 
     return TargetFeatures(

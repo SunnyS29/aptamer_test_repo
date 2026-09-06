@@ -43,6 +43,9 @@ class AptamerCandidate:
 def validate_sequence(seq: str, gc_min: float, gc_max: float,
                       max_homopolymer: int) -> bool:
     """Check whether a sequence passes basic lab-friendly quality filters."""
+    # Ambiguous bases cannot identify an exact candidate for synthesis.
+    if not seq or any(base not in "ACGT" for base in seq):
+        return False
     gc = gc_content(seq)
     if gc < gc_min or gc > gc_max:
         return False
@@ -62,12 +65,12 @@ def _parse_nonnegative_int(value: str, field_name: str) -> int:
     We require integer-like, non-negative counts because fractional or negative values
     almost always indicate a parsing issue upstream.
     """
-    if value is None:
-        return 0
-
+    if value is None or str(value).strip() == "":
+        raise ValueError(
+            f"Field '{field_name}' has a missing count. "
+            "Tip: use 0 for a confirmed absence; check the source file for missing measurements."
+        )
     text = str(value).strip()
-    if text == "":
-        return 0
 
     try:
         numeric = float(text)
@@ -117,11 +120,19 @@ def _read_counts_rows(path: str) -> tuple[list[str], list[dict[str, str]]]:
                 dialect = csv.excel
 
             reader = csv.DictReader(handle, dialect=dialect)
-            fieldnames = reader.fieldnames or []
+            fieldnames = [name.strip() for name in (reader.fieldnames or [])]
+            if any(not name for name in fieldnames) or len({name.lower() for name in fieldnames}) != len(fieldnames):
+                raise ValueError("Counts file has empty or duplicate headers. Tip: give each column a unique name.")
+            reader.fieldnames = fieldnames
             rows = []
             for row in reader:
                 if row is None:
                     continue
+                if None in row or any(value is None for value in row.values()):
+                    raise ValueError(
+                        f"Counts row near line {reader.line_num} does not match the headers. "
+                        "Tip: check for missing counts or an extra separator."
+                    )
                 cleaned = {k: (v.strip() if isinstance(v, str) else "") for k, v in row.items()}
                 if any(cleaned.values()):
                     rows.append(cleaned)
@@ -176,6 +187,8 @@ def _detect_round_columns(
     This keeps ingestion flexible while still failing loudly when detection is ambiguous.
     """
     if round_columns:
+        if len(set(round_columns)) != len(round_columns):
+            raise ValueError("selex.round_columns contains duplicate rounds. Tip: list each round once.")
         missing = [c for c in round_columns if c not in fieldnames]
         if missing:
             raise ValueError(
