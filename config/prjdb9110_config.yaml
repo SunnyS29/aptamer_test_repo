@@ -4,8 +4,9 @@
 
 target:
   input_type: "fasta"
+  # Demo target only. Replace this path with the target used in your experiment.
   input_value: "data/sample_targets.fasta"
-  name: "prjdb9110_target_context"
+  name: "DEMO_ONLY_replace_with_experimental_target"
 
 library:
   length_min: 15

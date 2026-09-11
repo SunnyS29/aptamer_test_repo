@@ -2,8 +2,9 @@
 
 target:
   input_type: "fasta"        # Options: pdb_id, fasta, smiles, uniprot
+  # Demo target only. Replace this path with the target used in your experiment.
   input_value: "data/sample_targets.fasta"
-  name: "vancomycin_target"
+  name: "DEMO_ONLY_replace_with_experimental_target"
 
 library:
   length_min: 15             # Minimum aptamer length (nt)

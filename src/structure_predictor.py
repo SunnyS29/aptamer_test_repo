@@ -1,8 +1,4 @@
-"""Support stage: secondary-structure features for shortlist tie-breaking.
-
-This module is not one of the five core stations, but it gives us extra context
-for The Winning Bunch when two candidates have similar enrichment behavior.
-"""
+"""Optional structure annotations for manual inspection, never for ranking."""
 
 import logging
 import re
@@ -20,7 +16,7 @@ except ImportError:
     VIENNA_AVAILABLE = False
     logger.warning(
         "ViennaRNA not installed. Structure outputs will stay neutral. "
-        "Tip: install with 'pip install ViennaRNA' for thermodynamic scoring."
+        "Tip: install with 'pip install ViennaRNA' for optional structure annotations."
     )
 
 

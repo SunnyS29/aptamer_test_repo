@@ -1,0 +1,2 @@
+-r requirements-plots.txt
+pytest>=7

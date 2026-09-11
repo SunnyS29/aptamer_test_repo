@@ -44,6 +44,7 @@ class TargetFeatures:
         return {
             "name": self.name,
             "input_type": self.input_type,
+            "metadata": self.metadata,
             "length": self.length,
             "molecular_weight": round(self.molecular_weight, 2),
             "avg_hydrophobicity": round(self.avg_hydrophobicity, 4),
@@ -187,6 +188,8 @@ def analyze_target(config: dict) -> TargetFeatures:
         if seqs:
             sequence = seqs[0][1]
             metadata["fasta_header"] = seqs[0][0]
+            if "synthetic" in seqs[0][0].lower():
+                logger.warning("The target FASTA is labelled synthetic. This is demo context, not verification of an experimental target.")
         else:
             raise ValueError(
                 f"No sequences found in FASTA target file: {input_value}. "

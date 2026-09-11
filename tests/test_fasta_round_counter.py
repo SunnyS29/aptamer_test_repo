@@ -141,3 +141,13 @@ def test_convert_round_files_extracts_insert_between_anchors(tmp_path):
     assert by_seq["AACC"]["round_2"] == "1"
     assert by_seq["GGTT"]["round_1"] == "1"
     assert by_seq["TTAA"]["round_2"] == "1"
+
+
+def test_conversion_does_not_overwrite_a_raw_input(tmp_path):
+    import pytest
+    first, second = tmp_path/'round_1.fasta', tmp_path/'round_2.fasta'
+    for path in (first, second):
+        path.write_text('>read\nACGT\n')
+    with pytest.raises(ValueError, match='overwrite a round file'):
+        convert_round_files([first, second], first)
+    assert first.read_text() == '>read\nACGT\n'

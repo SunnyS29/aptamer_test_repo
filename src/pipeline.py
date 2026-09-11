@@ -26,6 +26,7 @@ from src.target_analyzer import analyze_target
 from src.structure_predictor import predict_structures
 from src.binding_scorer import score_binding
 from src.filter_rank import RankedCandidate, filter_and_rank
+from src.run_record import start_run_record, finish_run_record
 
 logger = logging.getLogger("aptamer_pipeline")
 
@@ -33,60 +34,34 @@ STAGES = ["target", "library", "structure", "scoring", "filtering", "all"]
 
 
 def generate_plots(ranked_candidates: list, output_dir: Path) -> None:
-    """Generate summary visualization plots."""
+    """Plot measured enrichment, abundance, and the score that determines rank."""
     if not ranked_candidates:
-        logger.warning("No candidates to plot.")
         return
-
     try:
-        import pandas as pd
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        import seaborn as sns
-    except Exception as exc:
-        logger.warning(
-            f"Plot generation skipped because plotting dependencies failed: {exc}. "
-            "Tip: install matplotlib/seaborn or disable plotting in config."
-        )
+    except ImportError as exc:
+        logger.warning("Plots skipped: %s. Tip: install requirements-plots.txt or leave plotting off.", exc)
         return
 
-    df = pd.DataFrame([r.to_dict() for r in ranked_candidates])
-
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle("Aptamer Pipeline — Top Candidates", fontsize=14, fontweight="bold")
-
-    # 1. Composite score distribution
-    sns.histplot(df["composite_score"], bins=20, ax=axes[0, 0], color="steelblue")
-    axes[0, 0].set_title("Composite Score Distribution")
-    axes[0, 0].set_xlabel("Composite Score")
-
-    # 2. Binding vs Diversity scatter
-    sns.scatterplot(data=df, x="diversity_score", y="binding_score",
-                    hue="has_g_quadruplex", ax=axes[0, 1], alpha=0.7)
-    axes[0, 1].set_title("Binding vs Sequence Diversity")
-    axes[0, 1].set_xlabel("Diversity Score")
-    axes[0, 1].set_ylabel("Binding Score")
-
-    # 3. MFE distribution
-    sns.histplot(df["mfe"], bins=20, ax=axes[1, 0], color="coral")
-    axes[1, 0].set_title("Minimum Free Energy Distribution")
-    axes[1, 0].set_xlabel("MFE (kcal/mol)")
-
-    # 4. Score breakdown for top 10
-    top10 = df.head(10)
-    score_cols = ["binding_score", "diversity_score"]
-    top10[score_cols].plot(kind="bar", stacked=True, ax=axes[1, 1],
-                           color=["steelblue", "seagreen"])
-    axes[1, 1].set_title("Score Breakdown — Top 10 Candidates")
-    axes[1, 1].set_xlabel("Candidate")
-    axes[1, 1].set_xticklabels(top10["aptamer_id"], rotation=45, ha="right")
-
-    plt.tight_layout()
-    plot_path = output_dir / "pipeline_summary.png"
-    plt.savefig(plot_path, dpi=150)
-    plt.close()
-    logger.info(f"Plots saved to {plot_path}")
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    scores = [candidate.composite_score for candidate in ranked_candidates]
+    enrichment = [candidate.log2_enrichment for candidate in ranked_candidates]
+    abundance = [candidate.final_round_cpm for candidate in ranked_candidates]
+    axes[0].hist(scores, bins=min(20, len(scores)), color="steelblue")
+    axes[0].set(title="Enrichment ranking scores", xlabel="Score (not binding probability)", ylabel="Candidates")
+    axes[1].scatter(enrichment, abundance, color="teal", alpha=0.7)
+    axes[1].set(title="Enrichment and final abundance", xlabel="First-to-last log2 enrichment", ylabel="Final-round CPM")
+    top10 = ranked_candidates[:10]
+    axes[2].barh([candidate.aptamer_id for candidate in top10], [candidate.composite_score for candidate in top10])
+    axes[2].invert_yaxis()
+    axes[2].set(title="Top candidates in rank order", xlabel="Enrichment ranking score")
+    fig.tight_layout()
+    try:
+        fig.savefig(output_dir / "pipeline_summary.png", dpi=150)
+    finally:
+        plt.close(fig)
 
 
 def export_results(ranked_candidates: list, target_features,
@@ -133,9 +108,17 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
     Returns:
         Dictionary with pipeline results.
     """
+    if stage not in STAGES:
+        raise ValueError(f"Unknown pipeline stage: {stage}")
     results = {}
     output_config = config.get("output", {})
     output_dir = ensure_output_dir(output_config.get("directory", "output"))
+
+    run_record = None
+    if stage == "all":
+        if output_config.get("format", "csv") not in ("csv", "json", "both"):
+            raise ValueError("output.format must be csv, json, or both.")
+        run_record = start_run_record(config, output_dir)
 
     needs_target = stage in ("target", "all")
     needs_library = stage in ("library", "structure", "scoring", "filtering", "all")
@@ -239,6 +222,9 @@ def run_pipeline(config: dict, stage: str = "all") -> dict:
             generate_plots(results["ranked"], output_dir)
 
         logger.info("=" * 60)
+        finish_run_record(
+            run_record, output_dir, results["candidates"][0].round_order, len(results["ranked"])
+        )
         logger.info("PIPELINE COMPLETE")
         logger.info(f"Top candidate: {results['ranked'][0].aptamer_id} "
                      f"(score={results['ranked'][0].composite_score:.4f})"

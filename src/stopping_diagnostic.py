@@ -29,7 +29,7 @@ class MarkerSummary:
     leaderboard_overlap_count: int
     leaderboard_jaccard: float
     top3_slope_direction: str
-    top3_mean_acceleration: float
+    top3_mean_acceleration: float | None
     top1_coverage_raw_pct: float
     top10_coverage_raw_pct: float
     top100_coverage_raw_pct: float
@@ -43,7 +43,7 @@ class MarkerSummary:
     pace_median_top100: float
     pace_cv_top100: float
     pace_ge_0_7_count: int
-    data_quality_score: float
+    data_quality_score: float | None
     recommendation: str
     recommendation_reason: str
     phase_call: str
@@ -93,7 +93,7 @@ def _trajectory_markers_for_top3(
     by_sequence: dict[str, dict],
     rounds: list[str],
     totals: dict[str, int],
-) -> tuple[list[dict], float, int, int]:
+) -> tuple[list[dict], float | None, int, int]:
     details = []
     positive_accel = 0
     negative_accel = 0
@@ -111,13 +111,14 @@ def _trajectory_markers_for_top3(
         early = deltas[:half]
         late = deltas[half:]
 
-        early_mean = mean(early) if early else 0.0
+        early_mean = mean(early) if early else None
         late_mean = mean(late) if late else 0.0
-        accel = late_mean - early_mean
+        # Two observations give one change, not a change in growth rate.
+        accel = late_mean - early_mean if early_mean is not None else None
 
-        if accel > 0:
+        if accel is not None and accel > 0:
             positive_accel += 1
-        elif accel < 0:
+        elif accel is not None and accel < 0:
             negative_accel += 1
 
         details.append(
@@ -131,7 +132,8 @@ def _trajectory_markers_for_top3(
             }
         )
 
-    mean_accel = mean(d["acceleration"] for d in details) if details else 0.0
+    accelerations = [d["acceleration"] for d in details if d["acceleration"] is not None]
+    mean_accel = mean(accelerations) if accelerations else None
     return details, mean_accel, positive_accel, negative_accel
 
 
@@ -229,7 +231,7 @@ def _pace_metrics(
 
 def _data_quality_score(
     overlap_pct: float,
-    mean_accel: float,
+    mean_accel: float | None,
     positive_accel: int,
     negative_accel: int,
     cov_top1_raw: float,
@@ -237,7 +239,9 @@ def _data_quality_score(
     cov_top100_raw: float,
     pace_mean: float,
     pace_cv: float,
-) -> float:
+) -> float | None:
+    if mean_accel is None:
+        return None
     # 1) Stability score
     s1 = min(overlap_pct / 90.0, 1.0)
 
@@ -270,7 +274,7 @@ def _recommendation(
     redundancy_ratio: float,
     pace_mean: float,
     pace_cv: float,
-    mean_accel: float,
+    mean_accel: float | None,
     leaderboard_resolved: bool = True,
 ) -> tuple[str, str, str]:
     if redundancy_ratio < REDUNDANCY_CONFIDENCE_THRESHOLD:
@@ -307,7 +311,7 @@ def _recommendation(
         and pace_cv <= 0.20
     )
     if converged:
-        if mean_accel < -0.25:
+        if mean_accel is not None and mean_accel < -0.25:
             return (
                 "B",
                 "Leaderboards are stable and pace is coherent; top trajectories show mild deceleration consistent with approaching plateau.",
@@ -373,7 +377,9 @@ def evaluate_stopping_point(
     )
 
     slope_direction = "mixed"
-    if pos_accel == len(top3_ranked):
+    if mean_accel is None:
+        slope_direction = "unavailable"
+    elif pos_accel == len(top3_ranked):
         slope_direction = "accelerating"
     elif neg_accel == len(top3_ranked):
         slope_direction = "decelerating"
@@ -407,7 +413,7 @@ def evaluate_stopping_point(
         leaderboard_overlap_count=overlap,
         leaderboard_jaccard=round(jaccard, 3),
         top3_slope_direction=slope_direction,
-        top3_mean_acceleration=round(mean_accel, 4),
+        top3_mean_acceleration=round(mean_accel, 4) if mean_accel is not None else None,
         top1_coverage_raw_pct=round(cov["top1_raw_pct"], 2),
         top10_coverage_raw_pct=round(cov["top10_raw_pct"], 2),
         top100_coverage_raw_pct=round(cov["top100_raw_pct"], 2),
@@ -494,6 +500,8 @@ def main() -> None:
         return
 
     s = summary
+    acceleration_text = f"{s.top3_mean_acceleration:.4f}" if s.top3_mean_acceleration is not None else "unavailable (needs three rounds)"
+    quality_text = f"{s.data_quality_score:.1f}/100" if s.data_quality_score is not None else "unavailable (needs three rounds)"
     print(f"Rounds: {detail['previous_round']} -> {detail['final_round']}")
     print(
         f"Leaderboard stability: {s.leaderboard_overlap_count} shared leaders "
@@ -501,7 +509,7 @@ def main() -> None:
     )
     print(
         f"Slope trajectory (top3): {s.top3_slope_direction}, "
-        f"mean acceleration={s.top3_mean_acceleration:.4f}"
+        f"mean acceleration={acceleration_text}"
     )
     print(
         "Pool dominance (raw final round): "
@@ -520,7 +528,7 @@ def main() -> None:
         f"mean={s.pace_mean_top100:.4f}, median={s.pace_median_top100:.4f}, "
         f"cv={s.pace_cv_top100:.4f}, pace>=0.7={s.pace_ge_0_7_count}"
     )
-    print(f"Heuristic data quality score (not a probability): {s.data_quality_score:.1f}/100")
+    print(f"Heuristic data quality score (not a probability): {quality_text}")
     print(f"Recommendation: {s.recommendation} ({s.recommendation_reason})")
 
 

@@ -102,10 +102,17 @@ Think of every sequence as a runner in a stadium. The question is not who looked
 ## Quick Start
 
 ### Install
+Use Python 3.11 for the same version checked by the automated test workflow.
+
 ```bash
 git clone https://github.com/SunnyS29/aptamer_test_repo.git
 cd aptamer_test_repo
 pip install -r requirements.txt
+```
+
+Optional for plots (`output.generate_plots: true`):
+```bash
+pip install -r requirements-plots.txt
 ```
 
 Optional for rough structure annotation only:
@@ -126,8 +133,10 @@ python -m src.interactive_launcher
 The launcher will:
 - ask whether you already have a counts table or raw round files
 - let you choose the target input
-- let you choose an output folder
-- save an `interactive_run_config.yaml` file so the run is still reproducible
+- let you choose an output folder and confirm the selection-round numbers for raw files
+- save an `interactive_run_config.yaml` file with the chosen settings and, for raw files, the round mapping and extraction anchors
+
+The sample config and dataset presets use a synthetic demonstration target. Replace `target.input_value` and `target.name` with your experimental target before using its exported target context. The demo header is retained in JSON output and produces a warning.
 
 Run one station for debugging:
 ```bash
@@ -221,7 +230,7 @@ Use this when starting from raw files from the sequencer.
 
 Common input mistakes:
 - Missing `sequence` column name.
-- A round column with all zeros.
+- A round column with all zeros, or a row with counts but no sequence. Missing sequences now stop the run rather than silently losing their counts.
 - Mixed files from different experiments in one run.
 
 ## Configuration Cheat Sheet
@@ -230,6 +239,7 @@ Edit `config/pipeline_config.yaml`:
 
 - `target`: where target info comes from (`pdb_id`, `fasta`, `smiles`, `uniprot`)
 - `selex.counts_file`: the counts table path
+- `selex.round_columns`: optional round names in the exact selection order to use, for either wide or long tables. For example, `[round_start, round_end]` preserves that order. Without this setting, numbered round labels are sorted numerically; custom names need an explicit order. Numeric metadata such as `length` are not treated as rounds.
 - `library`: sequence QC filters (length, GC, homopolymer, min total count)
 - `scoring`: pseudocount + growth weights. The pseudocount must be finite and positive; weights must be finite, non-negative, and have a positive sum.
 - `scoring.vectorized_metrics`: set `true` to speed up enrichment and slope calculations with NumPy on large libraries (default `false`)
@@ -274,10 +284,20 @@ Edit `config/pipeline_config.yaml`:
 - If ranking still feels slow, raise `library.min_total_count` to reduce the candidate pool before Station 5.
 - If ViennaRNA is not installed, the pipeline continues without optional structure annotations.
 
+## Run Records
+
+A full `all` run writes `run_manifest.json` with its effective config, ordered rounds, input paths and SHA-256 fingerprints, Python version, source-code fingerprints, and Git revision when available. Hashing reads the counts file once more in small chunks, without keeping another copy in memory.
+
+The manifest starts with `status: started` and becomes `complete` only after export and any requested plots finish. If it remains `started`, inspect the error output; that run did not finish. These fingerprints cover the counts table and a local target FASTA, not the original raw-read files.
+
+Reusing an output folder replaces the standard ranked CSV/JSON, summary plot, default validation report, and manifest. Use a different output folder to keep an earlier run. Other files are left alone. The plots show enrichment, final CPM, and ranking score, not binding measurements or structure placeholders.
+
 ## Project Structure
 
 ```text
 src/
+├── interactive_launcher.py # Prompts for files, then calls the normal pipeline
+├── run_record.py          # Records inputs and manages current-run output files
 ├── pipeline.py            # Orchestrates the full run and stage-by-stage execution
 ├── sequence_generator.py  # The Scanner + The Starting Line logic
 ├── binding_scorer.py      # The Race Begins scoring
@@ -292,12 +312,13 @@ src/
 ## Testing
 
 ```bash
+python -m pip install -r requirements-dev.txt
 python -m pytest tests/ -v
 ```
 
 ## Stopping-Point Diagnostic
 
-Use this when you want a quick health check on whether SELEX rounds are converging:
+Use this when you want a quick health check on whether SELEX rounds are converging. With only two rounds, acceleration and the composite data quality score are reported as unavailable (`null` in JSON); there is only one observed interval to compare:
 
 ```bash
 python -m src.stopping_diagnostic --config config/pipeline_config.yaml

@@ -407,6 +407,12 @@ def convert_round_files(
     check the inputs, count each round, write the table, then write the summary.
     """
     _validate_round_inputs(round_files)
+    outputs = [output_csv] + ([summary_tsv] if summary_tsv is not None else [])
+    output_paths = [path.resolve() for path in outputs]
+    if len(set(output_paths)) != len(output_paths):
+        raise ValueError("Counts and summary need different output paths.")
+    if any(path.resolve() in output_paths for path in round_files):
+        raise ValueError("An output would overwrite a round file. Tip: choose a separate counts filename.")
     ordered_files, labels = _resolve_round_labels(round_files, round_labels)
     normalized_left, normalized_right = _normalized_anchors(left_anchor, right_anchor)
 

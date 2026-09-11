@@ -56,7 +56,13 @@ def validate_sequence(seq: str, gc_min: float, gc_max: float,
 
 def _normalize_sequence(value: str) -> str:
     """Normalize sequence text so we compare sequences consistently across files."""
-    return value.upper().replace("U", "T").replace(" ", "").strip()
+    sequence = value.upper().replace("U", "T").replace(" ", "").strip()
+    if not sequence:
+        raise ValueError(
+            "Found a counts row with no sequence. "
+            "Tip: restore its sequence from the source file; dropping the row changes the round totals."
+        )
+    return sequence
 
 
 def _parse_nonnegative_int(value: str, field_name: str) -> int:
@@ -84,16 +90,32 @@ def _parse_nonnegative_int(value: str, field_name: str) -> int:
     return int(numeric)
 
 
-def _sort_round_names(round_names: list[str]) -> list[str]:
-    """Sort round labels naturally (R1, round_2, R10) to preserve time order."""
+def _select_rounds(available: list[str], requested: Optional[list[str]] = None) -> list[str]:
+    """Use the requested order, or sort round numbers when the order is clear."""
+    if requested is not None:
+        if not requested or any(
+            not isinstance(name, str) or not name.strip() for name in requested
+        ):
+            raise ValueError("selex.round_columns must contain non-empty round names.")
+        if len(set(requested)) != len(requested):
+            raise ValueError("selex.round_columns contains duplicate rounds.")
+        missing = [name for name in requested if name not in available]
+        if missing:
+            raise ValueError(f"Configured rounds are missing from the counts file: {', '.join(missing)}")
+        return list(requested)
 
-    def sort_key(name: str):
+    numbered = []
+    for name in available:
         match = re.search(r"(\d+)", name)
-        if match:
-            return (0, int(match.group(1)), name)
-        return (1, float("inf"), name)
-
-    return sorted(round_names, key=sort_key)
+        if match is None:
+            raise ValueError(
+                "Round order is unclear. Tip: list the round names in selection order "
+                "under selex.round_columns, or use round_1, round_2, and so on."
+            )
+        numbered.append((int(match.group(1)), name))
+    if len({number for number, name in numbered}) != len(numbered):
+        raise ValueError("Round numbers are duplicated. Tip: check the labels or set selex.round_columns explicitly.")
+    return [name for number, name in sorted(numbered)]
 
 
 def _read_counts_rows(path: str) -> tuple[list[str], list[dict[str, str]]]:
@@ -159,60 +181,27 @@ def _detect_sequence_column(fieldnames: list[str]) -> str:
     )
 
 
-def _is_numeric_column(rows: list[dict[str, str]], column: str) -> bool:
-    """Check whether a column contains numeric-like values."""
-    has_non_empty = False
-    for row in rows:
-        value = row.get(column, "")
-        if str(value).strip() == "":
-            continue
-        has_non_empty = True
-        try:
-            float(value)
-        except ValueError:
-            return False
-    return has_non_empty
-
-
 def _detect_round_columns(
     fieldnames: list[str],
-    rows: list[dict[str, str]],
-    sequence_col: str,
     round_prefix: Optional[str],
     round_columns: Optional[list[str]],
 ) -> list[str]:
-    """Detect round columns in wide-format tables.
-
-    We try explicit config first, then prefix matching, then numeric fallback.
-    This keeps ingestion flexible while still failing loudly when detection is ambiguous.
-    """
-    if round_columns:
-        if len(set(round_columns)) != len(round_columns):
-            raise ValueError("selex.round_columns contains duplicate rounds. Tip: list each round once.")
-        missing = [c for c in round_columns if c not in fieldnames]
-        if missing:
-            raise ValueError(
-                "Configured round columns are missing from counts file: "
-                f"{', '.join(missing)}"
-            )
-        return _sort_round_names(round_columns)
-
+    """Recognize round labels, never unrelated numeric metadata such as length."""
+    if round_columns is not None:
+        return _select_rounds(fieldnames, round_columns)
     if round_prefix:
-        prefix_cols = [c for c in fieldnames if c.lower().startswith(round_prefix.lower())]
-        if prefix_cols:
-            return _sort_round_names(prefix_cols)
-
-    excluded = {sequence_col.lower(), "aptamer_id", "id", "name", "round", "count"}
-    numeric_cols = [
-        col for col in fieldnames
-        if col.lower() not in excluded and _is_numeric_column(rows, col)
+        matching = [name for name in fieldnames if name.lower().startswith(round_prefix.lower())]
+        if matching:
+            return _select_rounds(matching)
+    matching = [
+        name for name in fieldnames
+        if re.fullmatch(r"(?:round|rnd|r)[_-]?\d+", name, re.I)
     ]
-    if len(numeric_cols) >= 2:
-        return _sort_round_names(numeric_cols)
-
+    if matching:
+        return _select_rounds(matching)
     raise ValueError(
-        "Could not infer SELEX round columns. Provide 'selex.round_columns' "
-        "or use a 'round_' prefix. Tip: rename columns like round_1, round_2, round_3."
+        "Could not infer SELEX round columns. Tip: provide selex.round_columns "
+        "in selection order, or use headers such as round_1 and round_2."
     )
 
 
@@ -221,6 +210,7 @@ def _prepare_long_format(
     sequence_col: str,
     round_col: str,
     count_col: str,
+    round_columns: Optional[list[str]] = None,
 ) -> tuple[list[dict[str, int]], list[str]]:
     """Convert long-format rows into a sequence-by-round matrix.
 
@@ -231,8 +221,6 @@ def _prepare_long_format(
 
     for row in rows:
         sequence = _normalize_sequence(row.get(sequence_col, ""))
-        if not sequence:
-            continue
 
         round_name = str(row.get(round_col, "")).strip()
         if not round_name:
@@ -245,7 +233,7 @@ def _prepare_long_format(
     if not seq_round_counts:
         raise ValueError("No valid sequences found in long-format counts table.")
 
-    rounds = _sort_round_names(list(seen_rounds))
+    rounds = _select_rounds(list(seen_rounds), round_columns)
     table = []
     for seq, count_map in seq_round_counts.items():
         record = {"sequence": seq}
@@ -264,13 +252,11 @@ def _prepare_wide_format(
     fieldnames: list[str],
 ) -> tuple[list[dict[str, int]], list[str]]:
     """Validate wide-format rows and consolidate duplicates by sequence."""
-    rounds = _detect_round_columns(fieldnames, rows, sequence_col, round_prefix, round_columns)
+    rounds = _detect_round_columns(fieldnames, round_prefix, round_columns)
     seq_round_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
     for row in rows:
         sequence = _normalize_sequence(row.get(sequence_col, ""))
-        if not sequence:
-            continue
 
         for round_name in rounds:
             count = _parse_nonnegative_int(row.get(round_name, "0"), round_name)
@@ -317,6 +303,7 @@ def load_selex_counts(config: dict) -> tuple[list[dict[str, int]], list[str]]:
             sequence_col=sequence_col,
             round_col=lower_cols["round"],
             count_col=lower_cols["count"],
+            round_columns=round_columns,
         )
     else:
         table, rounds = _prepare_wide_format(
